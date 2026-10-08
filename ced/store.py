@@ -249,6 +249,34 @@ def recent_proposals(conn: sqlite3.Connection, limit: int = 50) -> list[dict]:
     } for r in rows]
 
 
+#: SQLite 的变量上限是 999，分批查留点余量
+_IN_CHUNK = 400
+
+
+def proposal_clues(conn: sqlite3.Connection, case_ids) -> dict[str, dict]:
+    """按 case_id 取**模型**提案的线索：它当初猜的是什么、过了准入没有。
+
+    发现与提案天然对得上 —— ``pipeline.case_id_of`` 与 ``Proposal.proposal_id``
+    是同一个算法（``sha1(payload)[:8]``），所以不必按轴名去猜是哪一条。
+
+    只认 ``origin='llm'``：手写轴不是"模型线索"，查不到就是"这条没有模型参与"。
+    """
+    ids = [i for i in dict.fromkeys(case_ids) if i]
+    out: dict[str, dict] = {}
+    for start in range(0, len(ids), _IN_CHUNK):
+        chunk = ids[start:start + _IN_CHUNK]
+        marks = ",".join("?" * len(chunk))
+        rows = conn.execute(
+            "SELECT proposal_id, axis, model, rationale, admitted, hit_fields, ts"
+            f" FROM proposal WHERE origin = 'llm' AND proposal_id IN ({marks})",
+            chunk).fetchall()
+        for pid, axis, model, rationale, admitted, fields, ts in rows:
+            out[pid] = {"case_id": pid, "axis": axis, "model": model or "",
+                        "rationale": rationale or "", "admitted": bool(admitted),
+                        "fields": json.loads(fields or "[]"), "ts": ts}
+    return out
+
+
 def proposal_history_brief(conn: sqlite3.Connection, limit: int = 12) -> str:
     """把最近的命中/未命中摘要成一段文字，用于**回写提示词**（创新点④）。"""
     rows = conn.execute(

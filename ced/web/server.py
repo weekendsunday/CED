@@ -170,6 +170,28 @@ def _ledger_view(limit: int = 60) -> dict:
         conn.close()
 
 
+def _attach_model_clues(payload: dict, result) -> None:
+    """给每条发现挂上"这条是模型猜过的吗"：猜的是什么、过了准入没有。
+
+    挂不上就留 ``None``，绝不编 —— 前端据此如实说"这条没有模型参与"。台账是旁路，
+    读不到（库被删/路径不对）时整栏留空，不能让结果页打不开。
+    """
+    case_ids = [f.case_id for f in result.findings]
+    clues: dict[str, dict] = {}
+    if case_ids:
+        conn = None
+        try:
+            conn = store.connect(scan_runner.db_path())
+            clues = store.proposal_clues(conn, case_ids)
+        except Exception:                  # noqa: BLE001 —— 线索是可选装饰，不是结果
+            clues = {}
+        finally:
+            if conn is not None:
+                conn.close()
+    for item in payload.get("findings", ()):
+        item["clue"] = clues.get(item.get("case_id"))
+
+
 class _Server(ThreadingHTTPServer):
     #: Windows 上 SO_REUSEADDR 允许两个进程绑同一端口，
     #: 那会让"端口被占就自动换"形同虚设 —— 关掉它，让第二次绑定如实失败。
@@ -554,7 +576,9 @@ class Handler(BaseHTTPRequestHandler):
         if job.result is None:
             return self._json(
                 {"error": f"任务 {job_id} 还没有产出结果（状态 {job.state}）"}, 409)
-        return self._json({"job": job.brief(), "result": result_payload(job.result)})
+        payload = result_payload(job.result)
+        _attach_model_clues(payload, job.result)
+        return self._json({"job": job.brief(), "result": payload})
 
     def _scan_metrics(self, job_id: str) -> None:
         job = REGISTRY.get(job_id)

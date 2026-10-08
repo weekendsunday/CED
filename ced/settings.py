@@ -40,6 +40,8 @@ DEFAULTS: dict = {
         "mode": "axis",
         "limit": 60,
         "seed": 42,
+        #: 扫描前是否先向模型要一批新提案 —— 在设置里定死，省得每次开页重勾
+        "use_llm": False,
     },
     "paths": {
         "poc_dir": "results/pocs",
@@ -51,7 +53,8 @@ _TYPES = {
     "llm": {"base_url": str, "model": str, "api_key": str, "timeout": float,
             "temperature": float, "max_tokens": int},
     "capture": {"port": int, "jsonl": str, "analyze_all": bool, "domains": list},
-    "scan": {"domain": str, "mode": str, "limit": int, "seed": int},
+    "scan": {"domain": str, "mode": str, "limit": int, "seed": int,
+             "use_llm": bool},
     "paths": {"poc_dir": str, "report_dir": str},
 }
 

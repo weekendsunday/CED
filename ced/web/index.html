@@ -435,9 +435,6 @@ details.sect{margin-top:var(--s4);padding:0 var(--s4)}
 .dag .node.done{border-color:var(--good-line);background:var(--good-soft)}
 .dag .arrow{color:var(--ink-3)}
 .report{max-height:340px;overflow:auto;background:#fff;border:1px solid var(--line);border-radius:8px;padding:10px;font-size:12px;line-height:1.5;white-space:pre-wrap;word-break:break-word}
-.fold{margin-top:12px;border:1px dashed var(--line-2);border-radius:10px;padding:8px 12px;background:var(--surface-2)}
-.fold>summary{cursor:pointer;font-weight:600;color:var(--ink-2);font-size:13px}
-.fold[open]>summary{margin-bottom:10px}
 .settings-grid{display:grid;gap:12px;grid-template-columns:1fr 1fr}
 .settings-grid fieldset.set{border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin:0}
 .settings-grid legend{font-weight:600;font-size:13px;padding:0 6px;color:var(--ink-2)}
@@ -600,7 +597,8 @@ dialog.sheet-wide{width:min(1000px,94vw)}
       </div>
     </div>
 
-    <details class="fold"><summary>内置矩阵扫描（不需要输入：5 领域 × 51 实现互相差分）</summary>
+  <div class="sect">
+    <div class="sect-hd">内置矩阵扫描 <span class="hint">5 领域 × 51 实现互相差分</span></div>
   <section class="legacy" id="tab-scan">
     <div class="card">
       <div class="card-hd"><h2>扫描任务</h2>
@@ -693,9 +691,10 @@ dialog.sheet-wide{width:min(1000px,94vw)}
       </div>
     </div>
   </section>
-    </details>
+  </div>
 
-    <details class="fold"><summary>验证外部发现（旧的独立入口，功能已被上面的自动检测覆盖）</summary>
+  <div class="sect">
+    <div class="sect-hd">验证外部发现 <span class="hint">旧的独立入口，功能已被上面的自动检测覆盖</span></div>
   <section class="legacy" id="tab-verify">
     <div class="card">
       <div class="card-hd"><h2>验证外部发现</h2>
@@ -721,9 +720,10 @@ dialog.sheet-wide{width:min(1000px,94vw)}
     </div>
     <div id="vfy-result"></div>
   </section>
-    </details>
+  </div>
 
-    <details class="fold"><summary>探测文件（拖一份原始字节，自己指定对比哪一对实现）</summary>
+  <div class="sect">
+    <div class="sect-hd">探测文件 <span class="hint">拖一份原始字节，自己指定对比哪一对实现</span></div>
   <section class="legacy" id="tab-probe">
     <div class="card">
       <div class="card-hd"><h2>探测文件</h2><span class="hint">拿抓包导出的原始字节，看两侧理解是否一致 —— <b>不是源码、不是程序、不是压缩包</b>；工具全程黑盒，只读字节流</span></div>
@@ -766,7 +766,7 @@ dialog.sheet-wide{width:min(1000px,94vw)}
 
     <div id="probe-result"></div>
   </section>
-    </details>
+  </div>
 
   </section>
 
@@ -799,6 +799,8 @@ dialog.sheet-wide{width:min(1000px,94vw)}
             <label>用例上限<input class="input" id="set-scan-limit"></label>
           </div>
           <label>随机种子<input class="input" id="set-scan-seed"></label>
+          <label class="check"><input type="checkbox" id="set-scan-llm"> <span>使用模型提案</span></label>
+          <div class="note">勾上后每次扫描先向模型要一批新提案：过两道机械门槛、只有真逼出结构分歧的才进本次语料，结果记入下方台账。页面上的同名勾选框按这里的值预填。</div>
         </fieldset>
         <fieldset class="set"><legend>输出路径</legend>
           <label>PoC 目录<input class="input" id="set-poc-dir"></label>
@@ -812,7 +814,8 @@ dialog.sheet-wide{width:min(1000px,94vw)}
       </div>
       <div id="set-err"></div>
 
-    <details class="fold"><summary>模型提案台账（模型只提案、内核只裁决）</summary>
+      <div class="sect">
+        <div class="sect-hd">模型提案台账 <span class="hint">模型只提案、内核只裁决</span></div>
   <section class="legacy" id="tab-ledger">
     <div class="card">
       <div class="card-hd"><h2>模型提案</h2><span class="hint">提案必须通过差分 oracle 的准入实验才算命中</span></div>
@@ -837,7 +840,7 @@ dialog.sheet-wide{width:min(1000px,94vw)}
       </div>
     </div>
   </section>
-    </details>
+      </div>
     </div>
     <div class="sheet-ft">
       <span class="note" id="set-dlg-msg">改完点「保存设置」；API Key 留空 = 不改动已保存的</span>
@@ -857,7 +860,8 @@ dialog.sheet-wide{width:min(1000px,94vw)}
       <div id="checkresult" class="stack"></div>
     </div>
   </section>
-    <details class="fold"><summary>内置案例库（47 个已知案例，点开看两侧观测与判定）</summary>
+  <div class="sect">
+    <div class="sect-hd">内置案例库 <span class="hint">47 个已知案例，点开一行看两侧观测与判定</span></div>
   <section class="legacy" id="tab-cases">
     <div class="card">
       <div class="card-hd"><h2>已知案例库</h2><span class="hint">(<span id="casecount">0</span> 个)</span></div>
@@ -871,7 +875,7 @@ dialog.sheet-wide{width:min(1000px,94vw)}
       </div>
     </div>
   </section>
-    </details>
+  </div>
   </section>
 
 
@@ -1581,10 +1585,27 @@ function renderScanEvidence(f){
     h += `</div>`;
   }
 
-  /* 模型线索（未验证） */
-  h += `<div class="sect"><div class="note"><b>模型线索（未验证）</b></div>
-    <div class="clue">本栏内容由大模型生成，<b>未经验证</b>，仅供参考；
-      能否成立以本页其它栏位的确定性证据为准。</div></div>`;
+  /* 模型线索（未验证）—— 模型当初猜的是什么。没有模型参与就直说，
+     不挂"未经验证"徽章：那个徽章是给"模型说过的话"用的，没有话就别挂。 */
+  const clue = f.clue;
+  h += `<div class="sect"><div class="note"><b>模型线索（未验证）</b></div>`;
+  if (clue){
+    const hit = (clue.fields && clue.fields.length)
+      ? '，命中字段 ' + esc(clue.fields.join('、')) : '';
+    h += `<div class="clue">
+      <div class="kv"><span class="k">提出者</span>${esc(clue.model || '（台账没记模型名）')}
+        <span class="note">提案轴 ${esc(clue.axis)}</span></div>
+      <div class="kv"><span class="k">它当初的猜测</span>${esc(clue.rationale || '（这条提案没写理由）')}</div>
+      <div class="kv"><span class="k">准入实验</span>${clue.admitted
+        ? '逼出了结构分歧，因此进了本次语料' + hit : '未命中'}</div>
+      <div class="note">以上是<b>模型的猜想</b>，不是判定 —— 它是不是真问题，
+        由上面几栏的确定性证据说了算；本栏只回答"这条是谁提出来的"。</div>
+    </div>`;
+  } else {
+    h += `<div class="kv">— <span class="note">本条的分歧轴不来自模型提案：
+      是内置手写轴，或本次扫描没开「使用模型提案」</span></div>`;
+  }
+  h += `</div>`;
 
   h += `</div>`;
   box.innerHTML = h;
@@ -2155,6 +2176,9 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
     el('set-scan-mode').value = s.scan.mode;
     el('set-scan-limit').value = s.scan.limit;
     el('set-scan-seed').value = s.scan.seed;
+    el('set-scan-llm').checked = !!s.scan.use_llm;
+    // 扫描的默认值里只有这个开关对每次运行的影响最大，同步到检测页那个勾选框
+    el('scan-llm').checked = !!s.scan.use_llm;
     el('set-poc-dir').value = s.paths.poc_dir;
     el('set-report-dir').value = s.paths.report_dir;
     el('set-state').textContent = '配置文件：' + s.path;
@@ -2213,7 +2237,8 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
       scan: {domain: el('set-scan-domain').value,
              mode: el('set-scan-mode').value,
              limit: parseInt(el('set-scan-limit').value, 10) || 60,
-             seed: parseInt(el('set-scan-seed').value, 10) || 42},
+             seed: parseInt(el('set-scan-seed').value, 10) || 42,
+             use_llm: el('set-scan-llm').checked},
       paths: {poc_dir: el('set-poc-dir').value.trim(),
               report_dir: el('set-report-dir').value.trim()}
     };
