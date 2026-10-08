@@ -14,6 +14,7 @@ from __future__ import annotations
 import threading
 from pathlib import Path
 
+from .. import artifacts
 from ..scenario.poc import build_poc
 from .proxy import CaptureProxy, Config
 
@@ -143,7 +144,7 @@ class CaptureRunner:
         directory = Path(out_dir) if out_dir else POC_DIR
         directory.mkdir(parents=True, exist_ok=True)
         path = directory / built.file_name
-        path.write_text(built.script, encoding="utf-8")
+        artifacts.write_text(path, built.script)
         return {"ok": True, "path": str(path), "case_id": built.case_id,
                 "domain": built.domain, "scenario": built.scenario, "title": built.title,
                 "level": built.level, "cwe": built.cwe or "",

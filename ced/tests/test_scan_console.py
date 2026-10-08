@@ -9,6 +9,7 @@
 """
 from __future__ import annotations
 
+import base64
 import json
 import os
 import sys
@@ -23,7 +24,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from ced import store
+from ced import adopted, store
 from ced.report.renderer import result_payload
 from ced.scan import runner
 from ced.scan.job import ABORTED, DONE, JobRegistry
@@ -50,10 +51,15 @@ def _get(base: str, path: str) -> tuple[int, dict]:
 
 
 class _TempDb(unittest.TestCase):
+    """把台账库与固化语料都隔离到临时目录 —— 单测不许依赖仓库里的数据文件。"""
+
     def setUp(self) -> None:
         self._dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self._old_db = os.environ.get("CED_DB")
         os.environ["CED_DB"] = str(Path(self._dir.name) / "console.db")
+        self._old_adopted = adopted.ADOPTED_DIR
+        adopted.ADOPTED_DIR = Path(self._dir.name) / "adopted"     # 空目录
+        self.addCleanup(lambda: setattr(adopted, "ADOPTED_DIR", self._old_adopted))
 
     def tearDown(self) -> None:
         if self._old_db is None:
@@ -349,6 +355,29 @@ class TestLlmProposalPath(_TempDb):
         self.assertEqual(job.n_proposal, 0)
         self.assertGreater(len(job.result.divergences), 0,
                            "降级后仍然必须跑出内置轴的分歧")
+
+    def test_adopted_corpus_enters_without_any_model(self):
+        """固化语料是**常驻基线**：不配模型、不勾「使用模型提案」也带上。
+
+        这是 `ced adopt` 的全部意义 —— 固化省的是模型调用，不是门槛（见 ced/adopted.py）。
+        """
+        payload = (b"POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length: 4\r\n"
+                   b"Transfer-Encoding: chunked\r\n\r\n0\r\n\r\n")
+        path = adopted.path_of("http1-framing")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"domain": "http1-framing", "adopted": [
+            {"axis": "adopted_e2e",
+             "payload_b64": base64.b64encode(payload).decode("ascii"),
+             "adopted_from": "fake-model", "rationale": "CL 与 TE 并存"}]},
+            ensure_ascii=False), encoding="utf-8")
+
+        job = REGISTRY.create(mode="axis", limit=20, seed=42)       # 不开 use_llm
+        runner.run_job(job)
+
+        self.assertEqual(job.state, DONE, job.error)
+        self.assertEqual(job.n_proposal, 1, "固化语料不带 --llm 也该入池")
+        axes = {f.divergence.axis for f in job.result.findings}
+        self.assertIn("adopted_e2e", axes, "入池的固化条目要带着自己的轴名出现（可归因）")
 
 
 if __name__ == "__main__":

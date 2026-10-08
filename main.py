@@ -32,6 +32,7 @@ TEST_FILES = (
     "ced/tests/test_socket_probe.py",
     "ced/tests/test_chain_e2e.py",
     "ced/tests/test_assist.py",
+    "ced/tests/test_adopted.py",
     "ced/tests/test_scan_console.py",
     "ced/tests/test_scenario.py",
     "ced/tests/test_metrics_web.py",

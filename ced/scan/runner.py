@@ -109,6 +109,32 @@ def _llm_proposals(emit, adapter, evaluator, conn, *, want: int = 8
     return [a.proposal.to_case() for a in admissions if a.admitted]
 
 
+def prepare_adopted(emit, adapter, evaluator, conn=None) -> list[tuple[str, bytes]]:
+    """固化语料：加载人工采纳过的模型提案，**照样重跑一遍准入实验**。
+
+    固化的意义是省掉模型调用，不是省掉门槛 —— 没逼出分歧的就地丢弃，
+    "只有过了准入的才进语料"这条不变式因此依然字面成立。
+
+    与人手无关：不勾「使用模型提案」也带上，它已经是内置基线的一部分。
+    ``conn`` 给了才记账 —— 那本台账是记命中率用的，CLI 不落库时可以不传。
+    """
+    from .. import adopted
+    from ..assist.compile import admit as admit_proposals
+    from ..assist.ledger import record_many
+
+    cases = adopted.load(adapter.name)
+    if not cases:
+        return []
+    admissions = admit_proposals([c.to_proposal() for c in cases], adapter, evaluator)
+    if conn is not None:
+        record_many(conn, admissions)
+    hit = sum(1 for a in admissions if a.admitted)
+    emit({"type": "stage", "stage": "propose",
+          "detail": f"固化语料 {len(admissions)} 条（{adopted.path_of(adapter.name).name}），"
+                    f"重新过准入实验 {hit} 条通过"})
+    return [a.proposal.to_case() for a in admissions if a.admitted]
+
+
 def prepare_proposals(emit, adapter, evaluator, conn, *, want: int = 8
                       ) -> list[tuple[str, bytes]]:
     """提案准备：先在**同一把尺子**上量手写轴，再要模型提案，两者都过准入实验。
@@ -138,9 +164,10 @@ def run_job(job: ScanJob, *, db: str | None = None) -> None:
         conn = store.connect(db)
         store.save_job(conn, job.row())
 
-        extra: list[tuple[str, bytes]] = []
+        extra: list[tuple[str, bytes]] = prepare_adopted(job.emit, adapter,
+                                                         evaluator, conn)
         if job.use_llm:
-            extra = prepare_proposals(job.emit, adapter, evaluator, conn)
+            extra += prepare_proposals(job.emit, adapter, evaluator, conn)
         job.n_proposal = len(extra)
         job.emit({"type": "stage", "stage": "scan",
                   "detail": f"提案候选 {len(extra)} 条（与内置语料重复的会被丢弃）；"

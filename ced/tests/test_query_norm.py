@@ -235,9 +235,15 @@ class TestCli(unittest.TestCase):
             "'--limit','40','--out'," + repr(str(out)) + ","
             "'--poc-dir'," + repr(str(poc_dir)) + "]))"
         )
+        # 子进程是 ced.cli.main —— 它会把 stdout 固定成 UTF-8（见 cli.main 的 reconfigure），
+        # 所以父进程必须按 UTF-8 解码。用平台默认编码（Windows 上是 GBK）去读会在读线程里
+        # UnicodeDecodeError，proc.stdout 直接变 None，真实错误被 "None + str" 的 TypeError 盖掉。
+        # stdout/stderr 兜底成空串也是这个道理：让失败信息看得见，别再被 TypeError 吃掉。
         proc = subprocess.run([sys.executable, "-c", bootstrap], cwd=str(ROOT),
-                              capture_output=True, text=True, timeout=120)
-        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+                              capture_output=True, text=True,
+                              encoding="utf-8", errors="replace", timeout=120)
+        self.assertEqual(proc.returncode, 0,
+                         (proc.stdout or "") + (proc.stderr or ""))
         self.assertRegex(proc.stdout, r"安全级 [1-9]")
         self.assertTrue(out.is_file())
         self.assertIn("query-norm", out.read_text(encoding="utf-8"))

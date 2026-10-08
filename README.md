@@ -127,6 +127,29 @@ python -m ced agent --rounds 4        # 闭环：模型看上一轮结果决定�
 python -m ced web                     # 网页控制台里勾「使用模型提案」
 ```
 
+### 固化语料：把审过的提案写进仓库，此后不再需要模型
+
+模型提案默认**只活一轮** —— 提出来、过两道门槛、进当次语料，然后只剩台账里一行记录。
+想让它下次还起作用，就得重新调一次模型（再花时间、再花钱），哪怕它上次已经逼出过
+真实的结构分歧。`ced adopt` 补的就是这一步：把人工审过的提案固化成
+`ced/cases/adopted/<领域>.json`（**进 git**，换机器、别人克隆都带着），此后每次扫描
+自动带上，**不再需要模型**。
+
+```bash
+python -m ced adopt                                      # 看台账里哪些够格（命中过的）
+python -m ced adopt --add cl_obs_fold --add te_obs_fold  # 采纳进仓库文件
+python -m ced adopt --drop cl_obs_fold                   # 撤下
+```
+
+三条口径，缺一条这个设计就不成立：
+
+* **不是新来源** —— 固化的是同一条提案（payload → 同一个 `proposal_id`），台账里仍记
+  `origin=llm`，报告里照样说得出"这是哪个模型猜的、当初的理由是什么"；
+* **不绕门槛** —— 加载后照样重跑差分 oracle 准入实验，没逼出分歧的就地丢弃。固化省的
+  是模型调用，**不是门槛**；
+* **只进人手** —— 只有 `--add` 写得进来，代码绝不自动采纳；写进这个文件等于把它当内置
+  语料看，得有人认账。
+
 ### 闭环 agent：模型只看执行结果，不看代码
 
 单次批量提案是**开环**。`ced agent` 把它接成闭环（对应 `docs/漏洞挖掘步骤.md` 里
@@ -355,16 +378,17 @@ python -m ced regression
 |---|---|
 | `ced/` | 源代码 |
 | `ced/assist/` | 大模型提案层（schema / client / compile / ledger / propose） |
+| `ced/adopted.py` + `ced/cases/adopted/` | 固化语料：人工采纳过的模型提案（`python -m ced adopt`），每次扫描自动带上、不再调模型 |
 | `ced/agent/` | 闭环 agent（tools / loop） |
 | `ced/scenario/` | 攻击场景模板与端到端 PoC |
 | `ced/intake/` | 验证层：外部发现解析与三态验证（做扫描器的裁判） |
 | `ced/scan/` | 扫描任务层（job / runner） |
 | `ced/web/` | 网页控制台（server.py + index.html） |
 | `docker/` | 真实 nginx → 探针链路（compose / 离线快照 / 实机验证记录与实际测到的定帧行为） |
-| `tests` | `ced/tests/` —— 191 项，`python main.py --check` 一键全跑 |
+| `tests` | `ced/tests/` —— 242 项，`python main.py --check` 一键全跑 |
 | `docs/部署运行说明.md` | 部署、运行、扩展、排错 |
 | `docs/技术方案.md` | 目标对象、服务形态、指标、排期 |
-| `results/` | 跑出来的报告、结果库与 PoC 脚本（样例报告可由 `python -m ced scan --domain http1-framing --mode axis --limit 60 --poc-dir results/pocs` 原样重建，22 个 PoC 脚本逐字节一致） |
+| `results/` | 跑出来的报告、结果库与 PoC 脚本（样例可由 `python -m ced scan --domain http1-framing --mode axis --limit 60 --out results/ced-report.md --json results/ced-report.json --db results/ced.db --poc-dir results/pocs` 原样重建：报告与 **26 个 PoC 脚本逐字节一致**，结果库 `.db` 逻辑内容一致、字节会因 SQLite 页布局而不同） |
 | `samples/` | **可测试样本**：10 个原始请求（覆盖 5 个领域 + 1 个对照组）+ 5 种外部格式；每个文件的结论都是实跑出来的，`ced/tests/test_samples.py` 盯着它不许失真 |
 | `main.py` | 启动入口：起网页控制台 / 跑自检 |
 

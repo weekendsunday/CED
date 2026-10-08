@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..adapters import get as get_adapter
+from .. import artifacts
 from ..contracts import Quantified
 from . import templates
 
@@ -299,7 +300,7 @@ def write_pocs(result, out_dir: str | Path) -> list[Path]:
     for poc in build_pocs(result):
         path = directory / poc.file_name
         if not path.exists() or path.read_text(encoding="utf-8") != poc.script:
-            path.write_text(poc.script, encoding="utf-8")
+            artifacts.write_text(path, poc.script)
         written.append(path)
     return written
 

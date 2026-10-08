@@ -21,7 +21,7 @@ from .pipeline import scan
 from .contracts import ProbeUnreachable
 from .probe import Evaluator
 from .report.renderer import render_json, render_markdown
-from . import store
+from . import artifacts, store
 
 
 def _print_event(event: dict) -> None:
@@ -51,13 +51,17 @@ def _cmd_scan(args: argparse.Namespace) -> int:
         topo_mode = "axis"
     evaluator = Evaluator(topo.impls)
 
-    extra: list[tuple[str, bytes]] = []
+    from .scan import runner as scan_runner
+
+    # 固化语料不依赖模型（见 python -m ced adopt）：它与内置手写轴同属基线，
+    # 不带 --llm 也带上；每一条照样重跑准入实验，通不过的就地丢弃。
+    extra: list[tuple[str, bytes]] = scan_runner.prepare_adopted(
+        _print_event, adapter, evaluator)
     if args.llm:
-        from .scan import runner as scan_runner
         conn = store.connect(scan_runner.db_path())
         try:
-            extra = scan_runner.prepare_proposals(_print_event, adapter,
-                                                  evaluator, conn)
+            extra += scan_runner.prepare_proposals(_print_event, adapter,
+                                                   evaluator, conn)
         finally:
             conn.close()
 
@@ -71,7 +75,7 @@ def _cmd_scan(args: argparse.Namespace) -> int:
 
     report = render_markdown(result, domain=topo.domain, topo_desc=topo.describe(),
                              poc_dir=args.poc_dir)
-    Path(args.out).write_text(report, encoding="utf-8")
+    artifacts.write_text(args.out, report)
 
     print("-" * 62)
     print(f"[结果] 用例 {result.total_cases} | 实现对 {result.jobs} | "
@@ -100,7 +104,7 @@ def _cmd_scan(args: argparse.Namespace) -> int:
         print("[产物] 无 security 级发现，因此没有 PoC（不夸大）")
 
     if args.json:
-        Path(args.json).write_text(render_json(result), encoding="utf-8")
+        artifacts.write_text(args.json, render_json(result))
         print(f"[产物] {args.json}")
     if args.db:
         conn = store.open_fresh(args.db)
@@ -358,7 +362,7 @@ def _cmd_poc(args: argparse.Namespace) -> int:
     directory = Path(args.out)
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / poc.file_name
-    path.write_text(poc.script, encoding="utf-8")
+    artifacts.write_text(path, poc.script)
     print(f"\nPoC 脚本  {path}")
     print(f"          python {path}                                     # 离线算字节账")
     print(f"          python {path} --send HOST:PORT --i-am-authorized   # 授权后真发")
@@ -383,9 +387,11 @@ def _cmd_agent(args: argparse.Namespace) -> int:
 
     client = LlmClient(config_from_env())
     conn = store.connect(args.db or scan_runner.db_path())
+    # 固化语料先入池：它是内置基线的一部分，agent 每一轮的 scan_corpus 都会带上
+    seeded = scan_runner.prepare_adopted(_print_event, adapter, evaluator, conn)
     toolbox = ToolBox(adapter, evaluator, conn=conn, client=client,
                       mode=args.mode, limit=args.limit, seed=args.seed,
-                      max_calls=args.max_calls)
+                      max_calls=args.max_calls, proposals=list(seeded))
 
     print("=" * 66)
     print(f"闭环 agent　目标：{args.goal}")
@@ -425,7 +431,7 @@ def _cmd_agent(args: argparse.Namespace) -> int:
 
     report = render_markdown(merged, domain=topo.domain, topo_desc=topo.describe(),
                              poc_dir=args.poc_dir)
-    Path(args.out).write_text(report, encoding="utf-8")
+    artifacts.write_text(args.out, report)
     print(f"[产物] {args.out}")
 
     pocs = build_pocs(merged)
@@ -434,7 +440,7 @@ def _cmd_agent(args: argparse.Namespace) -> int:
         print(f"[产物] {args.poc_dir}  （{len(paths)} 个端到端 PoC 脚本）")
 
     if args.json:
-        Path(args.json).write_text(render_json(merged), encoding="utf-8")
+        artifacts.write_text(args.json, render_json(merged))
         print(f"[产物] {args.json}")
     return 0
 
@@ -513,6 +519,83 @@ def _cmd_assist(args: argparse.Namespace) -> int:
         return 0
     finally:
         conn.close()
+
+
+def _cmd_adopt(args: argparse.Namespace) -> int:
+    """固化语料：把审过的模型提案写进仓库，扫描时直接用，不再调模型。
+
+    只认**命中过**的提案（台账里 ``admitted=1`` 的 ``llm`` 条目）—— 采纳的前提是
+    它真的逼出过结构分歧，不是模型自己说得好。写进
+    ``ced/cases/adopted/<domain>.json`` 后仍然要自己 review 再提交：
+    这一步只是写文件，代码不替你做主，因为写进去就等于把它当内置语料了。
+    """
+    from . import adopted
+    from .scan import runner as scan_runner
+
+    domain = args.domain
+    path = adopted.path_of(domain)
+
+    if args.drop:
+        gone, absent = adopted.drop(domain, args.drop)
+        for axis in gone:
+            print(f"[撤下] {axis}")
+        for axis in absent:
+            print(f"[跳过] {axis}　（固化语料里本来就没有）")
+        if not gone:
+            return 1
+        print(f"\n[产物] {path}　剩 {len(adopted.load(domain))} 条")
+        return 0
+
+    if args.add:
+        conn = store.connect(args.db or scan_runner.db_path())
+        try:
+            added, existing, missing = adopted.adopt(conn, domain, args.add)
+        finally:
+            conn.close()
+        for axis in added:
+            print(f"[采纳] {axis}")
+        for axis in existing:
+            print(f"[跳过] {axis}　（已经在固化语料里）")
+        for axis in missing:
+            print(f"[拒绝] {axis}　（台账里没有它的命中记录 —— "
+                  f"只采纳真的逼出过分歧的）")
+        if not added:
+            return 1 if missing else 0
+        print(f"\n[产物] {path}　共 {len(adopted.load(domain))} 条")
+        print("       review 一下再提交 —— 写进去就等于把它当内置语料了；"
+              "本次扫描起就会自动带上，且不再需要模型。")
+        return 0
+
+    # 没给动作 = 看现状：固化语料 + 台账里还够格采纳的候选
+    planted = adopted.listing(domain)
+    print(f"领域        {domain}")
+    print(f"固化语料    {path}")
+    print(f"             {len(planted)} 条"
+          + ("" if path.exists() else "　（文件还不存在，采纳第一条时会建）"))
+    for row in planted:
+        print(f"  [已固化] {row['axis']:<34}{row['bytes']:>4}B　"
+              f"{row['model'] or '—':<16}{row['adopted_at']}")
+        print(f"           命中字段 {', '.join(row['hit_fields']) or '—'}"
+              f"　{row['rationale'][:60]}")
+
+    conn = store.connect(args.db or scan_runner.db_path())
+    try:
+        rows = adopted.candidates(conn)
+    finally:
+        conn.close()
+    print()
+    print(f"台账里够格采纳的    {len(rows)} 条（模型提的、且逼出过分歧）")
+    for row in rows:
+        print(f"  [候选]   {row['axis']:<34}{len(row['payload']):>4}B　"
+              f"{row['model'] or '—':<16}{row['proposal_id']}")
+    if not rows:
+        print("           还没有 —— 先在网页上「让模型提一批新提案」，"
+              "或 python -m ced assist --propose 8")
+    print("\n用法        python -m ced adopt --add <轴名>   采纳（可重复 --add）")
+    print("            python -m ced adopt --drop <轴名>  撤下")
+    print("            台账没有领域列：跨领域的条目会在准入实验里被当前领域的"
+          "对照自然筛掉，不必在这里拦。")
+    return 0
 
 
 def _cmd_web(args: argparse.Namespace) -> int:
@@ -649,7 +732,7 @@ def _cmd_verify(args: argparse.Namespace) -> int:
                 f"`{item.hypothesis.target[:70]}` | {item.domain or '—'} | "
                 f"{item.left} ↔ {item.right} | {item.level or '—'} | "
                 f"{item.kind or '—'} | {(item.detail or item.reason)[:90]} |")
-        Path(args.out).write_text("\n".join(lines) + "\n", encoding="utf-8")
+        artifacts.write_text(args.out, "\n".join(lines) + "\n")
         print(f"[产物] {args.out}")
     if args.json:
         from dataclasses import asdict
@@ -662,8 +745,8 @@ def _cmd_verify(args: argparse.Namespace) -> int:
              "hypothesis": asdict(v.hypothesis)}
             for v in results
         ]
-        Path(args.json).write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        artifacts.write_text(
+            args.json, json.dumps(payload, ensure_ascii=False, indent=2))
         print(f"[产物] {args.json}")
     return 0
 
@@ -832,6 +915,17 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--domain", default="http1-framing", choices=sorted(ADAPTERS),
                    help="按哪个领域向模型要提案")
     a.set_defaults(func=_cmd_assist)
+
+    ad = sub.add_parser(
+        "adopt", help="固化语料：把审过的模型提案写进仓库，以后扫描直接用、不再调模型")
+    ad.add_argument("--domain", default="http1-framing", choices=sorted(ADAPTERS),
+                    help="按哪个领域固化（文件名 = 领域名.json）")
+    ad.add_argument("--add", action="append", metavar="AXIS", default=None,
+                    help="采纳这条轴（可重复）；只接受台账里命中过的")
+    ad.add_argument("--drop", action="append", metavar="AXIS", default=None,
+                    help="从固化语料里撤下这条轴（可重复）")
+    ad.add_argument("--db", default=None, help="台账库（默认 ced.db）")
+    ad.set_defaults(func=_cmd_adopt)
     return ap
 
 
