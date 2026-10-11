@@ -156,7 +156,7 @@ class EncNormAdapter:
 
     # ---------------------------------------------------------------- 量化
 
-    def quantify(self, payload: bytes, left_id: str, right_id: str):
+    def quantify(self, payload: bytes, left_id: str, right_id: str, div=None):
         """量化：**同一段字节被检查侧与执行侧读成了不同文本**。
 
         模型与分帧 / 路径领域同构，只是数字的含义不同 ——

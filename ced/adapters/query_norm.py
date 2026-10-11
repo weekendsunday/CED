@@ -227,7 +227,7 @@ class QueryNormAdapter:
 
     # ---------------------------------------------------------------- 量化
 
-    def quantify(self, payload: bytes, left_id: str, right_id: str):
+    def quantify(self, payload: bytes, left_id: str, right_id: str, div=None):
         """量化：**同一段查询串被前置与后端读成了不同的参数取值**。
 
         两侧都是本地参照实现时才能算；含真实产品时返回 None，报告如实写"未量化"。

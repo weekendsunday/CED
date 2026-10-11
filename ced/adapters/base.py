@@ -85,11 +85,17 @@ class DomainAdapter(Protocol):
         """
         ...
 
-    def quantify(self, payload: bytes, left_id: str, right_id: str):
+    def quantify(self, payload: bytes, left_id: str, right_id: str,
+                 div=None):
         """把"两侧理解不同"量化成"真的有东西错位了"（``Quantified`` 或 None）。
 
+        ``div`` 是本次差分的 :class:`Divergence`（含两侧观测）—— 当任一侧是
+        真实产品（runner=chain）时，适配器可以从链路观测里的**实测字段**
+        （``forwarded_raw_len`` / ``leftover_len``）做实机量化，而不是返回 None。
+
         各领域的量化指标不同：分帧是**被夹带的字节数**，路径归一化是**资源路径的错位**。
-        两侧都是本地参照实现时才能算；含真实产品时返回 None，报告如实写"未量化"。
+        两侧都是本地参照实现时按模型口径算；含真实产品时优先用实测字段，
+        实测也拿不到才返回 None，报告如实写"未量化"。
         """
         ...
 

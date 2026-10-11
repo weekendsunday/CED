@@ -29,18 +29,25 @@ services:
       dockerfile: docker/probe/Dockerfile
     image: ced/probe:dev
     container_name: ced-bench-probe
+    environment:
+      # 换领域重起即可：CED_DOMAIN=url-norm docker compose up -d probe front
+      # （policy 缺省取该领域的基线实现 id；见 ced/impls/）
+      CED_DOMAIN: ${CED_DOMAIN:-http1-framing}
+      CED_POLICY: ${CED_POLICY:-ref-cl-first}
     command:
       - python
       - -m
       - ced.probe.server
+      - --domain
+      - ${CED_DOMAIN:-http1-framing}
+      - --policy
+      - ${CED_POLICY:-ref-cl-first}
       - --host
       - 0.0.0.0
       - --data-port
       - "8800"
       - --api-port
       - "8801"
-      - --policy
-      - ref-cl-first
     expose:
       - "8800"          # 只在内部网络里可达（不给宿主）
     ports:

@@ -148,13 +148,19 @@ class Http1FramingAdapter:
                 "            print(f\"断言        {'PASS' if ok else 'FAIL'}（期望 {EXPECT}）\")"),
         }
 
-    def quantify(self, payload: bytes, left_id: str, right_id: str):
-        """量化：前置转发出去的字节里，后端只消费了多少 —— 差额即被夹带字节数。"""
+    def quantify(self, payload: bytes, left_id: str, right_id: str, div=None):
+        """量化：前置转发出去的字节里，后端只消费了多少 —— 差额即被夹带字节数。
+
+        两侧都是参照实现 → 模型口径（chain_evidence 推演）；
+        含真实产品（runner=chain）→ **实机口径**：链路观测里的
+        ``forwarded_raw_len``（探针实测前置转发的字节数）与 ``leftover_len``
+        （参照后端策略消费后剩下的字节）都是实测值，直接采用。
+        """
         try:
             front = reference.policy_of(left_id)
             back = reference.policy_of(right_id)
         except KeyError:
-            return None        # 含真实产品，本机无法量化
+            return self._quantify_real(div, left_id, right_id)
         evidence = chain_evidence(payload, front, back, left_id, right_id)
         return Quantified(
             label="被夹带字节数",
@@ -165,5 +171,34 @@ class Http1FramingAdapter:
                     "smuggled": evidence.smuggled_len},
             numbers=(evidence.forwarded, evidence.back_consumed,
                      evidence.smuggled_len),
+            verified=True,
+        )
+
+    def _quantify_real(self, div, left_id: str, right_id: str):
+        """实机量化：从链路观测的实测字段算被夹带字节数（不经过模型）。"""
+        if div is None:
+            return None
+        obs = (div.left if div.left.fields.get("forwarded_raw_len")
+               else div.right)
+        forwarded = obs.fields.get("forwarded_raw_len")
+        if not forwarded:
+            return None        # 链路观测里没有实测字节数，如实写"未量化"
+        leftover = obs.fields.get("leftover_len")
+        consumed = obs.fields.get("consumed")
+        back_consumed = (forwarded - leftover if leftover is not None
+                         else (consumed or 0))
+        smuggled = leftover if leftover is not None else forwarded - back_consumed
+        return Quantified(
+            label="被夹带字节数（实机测量）",
+            describe=(
+                f"**实机测量**：真实前置 `{obs.impl_id}` 转发了 {forwarded} 字节，"
+                f"后端侧（探针参照策略）只消费 {back_consumed} 字节 → "
+                f"**{smuggled} 字节成为后端眼里下一条请求的开头**"
+                f"（实测值，非模型推演；PoC --chain 可在链路上复验）"),
+            values={"front": left_id, "back": right_id,
+                    "forwarded": forwarded,
+                    "back_consumed": back_consumed,
+                    "smuggled": smuggled},
+            numbers=(forwarded, back_consumed, smuggled),
             verified=True,
         )

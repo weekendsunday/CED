@@ -147,14 +147,11 @@ def scan(adapter, evaluator, *, mode: str = "axis", limit: int | None = None,
             # 链路量化必须针对**这条发现自己的那一对**，而不是拓扑里固定的链路，
             # 否则会出现"安全级发现"配着"两侧理解一致"的自相矛盾。
             # 量化口径是**领域知识**（分帧=被夹带字节数，路径=资源错位），故由适配器给出。
-            specs = evaluator.specs
-            fspec, bspec = specs.get(left_id), specs.get(right_id)
-            if (fspec is not None and bspec is not None
-                    and fspec.runner == "local" and bspec.runner == "local"):
-                quantified = adapter.quantify(finding.minimized or payload,
-                                              left_id, right_id)
-                if quantified is not None:
-                    finding.chain_evidence = quantified.describe
+            # 含真实产品（chain 观测）时适配器改用实测字段量化 —— 不再一律"未量化"。
+            quantified = adapter.quantify(finding.minimized or payload,
+                                          left_id, right_id, div=div)
+            if quantified is not None:
+                finding.chain_evidence = quantified.describe
 
         result.findings.append(finding)
 

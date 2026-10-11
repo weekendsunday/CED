@@ -1,0 +1,44 @@
+# 客户拓扑：真实 nginx 前置 → CED 探针（url-norm 领域）
+#
+# 观测对象：真实 nginx 转发出去的请求行（proxy_pass 会把绝对形式重写成源站形式，
+# Host 头被显式改写）—— 探针按 url-norm 的 ``extract`` 取出请求目标，
+# 与进程内参照实现比"这个请求去哪个资源"。
+#
+# 跑起来：
+#   ① 起栈：  CED_DOMAIN=url-norm CED_POLICY=url-gateway \
+#              docker compose -f docker/docker-compose.yml up -d --build probe front
+#   ② 跑扫描：python -m ced scan --topology ced/topologies/real-nginx-url-norm.yaml \
+#                                --limit 12 --out results/real-url.md
+#   ③ 收工：  docker compose -f docker/docker-compose.yml down
+#
+# 端口约定与 docker/docker-compose.yml 严格对应（同 real-nginx-probe.yaml）。
+
+domain: url-norm
+
+impls:
+  - id: customer-gateway
+    name: customer-gateway (nginx)
+    version: "1.25"
+    role: front
+    runner: chain
+    endpoint: 127.0.0.1:8080
+    probe_api: 127.0.0.1:8801
+    image: nginx:1.25-alpine
+    notes: "真实 nginx 前置：观测它转发出去的请求目标。"
+
+  - id: url-gateway
+    role: back
+    runner: local
+    policy: url-gateway
+
+  - id: url-decode-twice
+    role: back
+    runner: local
+    policy: url-decode-twice
+
+  - id: url-strip-semicolon
+    role: back
+    runner: local
+    policy: url-strip-semicolon
+
+chain: [customer-gateway, url-gateway]

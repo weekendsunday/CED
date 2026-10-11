@@ -172,7 +172,7 @@ class HostNormAdapter:
 
     # ---------------------------------------------------------------- 量化
 
-    def quantify(self, payload: bytes, left_id: str, right_id: str):
+    def quantify(self, payload: bytes, left_id: str, right_id: str, div=None):
         """量化：**同一段 Host 被前置与后端认成了不同虚拟主机**。
 
         模型与路径领域完全同构 —— 路径是"前置认的资源 vs 后端认的资源"，

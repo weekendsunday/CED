@@ -198,7 +198,7 @@ class UrlNormAdapter:
                 "              f\"（期望错位={expect_mismatch}）\")"),
         }
 
-    def quantify(self, payload: bytes, left_id: str, right_id: str):
+    def quantify(self, payload: bytes, left_id: str, right_id: str, div=None):
         """量化：**同一段 target 被前置与后端解成了不同资源**。
 
         模型与分帧领域完全同构，只是数字的含义不同 ——

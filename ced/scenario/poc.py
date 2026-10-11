@@ -328,7 +328,7 @@ def build_poc(finding, *, domain: str = DEFAULT_DOMAIN) -> Poc | None:
 
     adapter = get_adapter(domain)
     quant = adapter.quantify(payload, divergence.left.impl_id,
-                             divergence.right.impl_id)
+                             divergence.right.impl_id, div=divergence)
 
     values: dict = {
         "front": divergence.left.impl_id,

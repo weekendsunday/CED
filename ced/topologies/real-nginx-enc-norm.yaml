@@ -1,0 +1,42 @@
+# 客户拓扑：真实 nginx 前置 → CED 探针（enc-norm 领域）
+#
+# 观测对象：真实 nginx 转发出去的请求字节里的编码语义（过长 UTF-8、NUL、
+# 全角、%uXXXX……）—— 探针按 enc-norm 的 ``extract`` 取出观测对象，
+# 与进程内参照实现比"这段字节被解释成什么文本"。
+#
+# 跑起来：
+#   ① 起栈：  CED_DOMAIN=enc-norm CED_POLICY=enc-strict \
+#              docker compose -f docker/docker-compose.yml up -d --build probe front
+#   ② 跑扫描：python -m ced scan --topology ced/topologies/real-nginx-enc-norm.yaml \
+#                                --limit 12 --out results/real-enc.md
+#   ③ 收工：  docker compose -f docker/docker-compose.yml down
+
+domain: enc-norm
+
+impls:
+  - id: customer-gateway
+    name: customer-gateway (nginx)
+    version: "1.25"
+    role: front
+    runner: chain
+    endpoint: 127.0.0.1:8080
+    probe_api: 127.0.0.1:8801
+    image: nginx:1.25-alpine
+    notes: "真实 nginx 前置：观测它转发出去的字节的编码解释。"
+
+  - id: enc-strict
+    role: back
+    runner: local
+    policy: enc-strict
+
+  - id: enc-overlong-accept
+    role: back
+    runner: local
+    policy: enc-overlong-accept
+
+  - id: enc-nfc
+    role: back
+    runner: local
+    policy: enc-nfc
+
+chain: [customer-gateway, enc-strict]

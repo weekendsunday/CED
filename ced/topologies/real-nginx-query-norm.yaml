@@ -1,0 +1,41 @@
+# 客户拓扑：真实 nginx 前置 → CED 探针（query-norm 领域）
+#
+# 观测对象：真实 nginx 转发出去的查询串 —— 探针按 query-norm 的 ``extract``
+# 取出查询串，与进程内参照实现比"这串字节解析出哪些参数、取什么值"。
+#
+# 跑起来：
+#   ① 起栈：  CED_DOMAIN=query-norm CED_POLICY=query-gateway \
+#              docker compose -f docker/docker-compose.yml up -d --build probe front
+#   ② 跑扫描：python -m ced scan --topology ced/topologies/real-nginx-query-norm.yaml \
+#                                --limit 12 --out results/real-query.md
+#   ③ 收工：  docker compose -f docker/docker-compose.yml down
+
+domain: query-norm
+
+impls:
+  - id: customer-gateway
+    name: customer-gateway (nginx)
+    version: "1.25"
+    role: front
+    runner: chain
+    endpoint: 127.0.0.1:8080
+    probe_api: 127.0.0.1:8801
+    image: nginx:1.25-alpine
+    notes: "真实 nginx 前置：观测它转发出去的查询串。"
+
+  - id: query-gateway
+    role: back
+    runner: local
+    policy: query-gateway
+
+  - id: query-semicolon-sep
+    role: back
+    runner: local
+    policy: query-semicolon-sep
+
+  - id: query-last-wins
+    role: back
+    runner: local
+    policy: query-last-wins
+
+chain: [customer-gateway, query-gateway]

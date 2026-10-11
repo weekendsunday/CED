@@ -26,7 +26,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from ced.adapters.http1_framing import Http1FramingAdapter
-from ced.contracts import ImplSpec
+from ced.contracts import Divergence, ImplSpec, Observation
 from ced.orchestrate.topology import Topology
 from ced.pipeline import scan
 from ced.contracts import ProbeUnreachable
@@ -36,6 +36,7 @@ ADAPTER = Http1FramingAdapter()
 FRONT = Path(__file__).resolve().parent / "fixtures" / "standin_front.py"
 NGINX_LIKE_FRONT = Path(__file__).resolve().parent / "fixtures" / "nginx_like_front.py"
 SILENT_DROP_FRONT = Path(__file__).resolve().parent / "fixtures" / "silent_drop_front.py"
+HOST_GATE_FRONT = Path(__file__).resolve().parent / "fixtures" / "host_gate_front.py"
 DEVNULL = subprocess.DEVNULL
 
 
@@ -243,6 +244,81 @@ class TestChainE2E(unittest.TestCase):
             scan(ADAPTER, Evaluator(topo.impls), mode="cross", limit=4,
                  do_minimize=False)
         self.assertIn("探针控制口", str(ctx.exception))
+
+
+class TestFrontAdaptive(unittest.TestCase):
+    """前置自适应：缺 Host 的请求被门禁前置拒绝 → 引擎补 Host 重试，
+    观测带 ``front_adapted`` 标记；实机量化直接用实测字节。"""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.probe_data = _free_port()
+        cls.probe_api = _free_port()
+        cls.probe = subprocess.Popen(
+            [sys.executable, "-m", "ced.probe.server",
+             "--policy", "ref-cl-first",
+             "--data-port", str(cls.probe_data),
+             "--api-port", str(cls.probe_api)],
+            cwd=str(ROOT), stdout=DEVNULL, stderr=DEVNULL)
+        try:
+            _wait_port(cls.probe_api)
+        except unittest.SkipTest:
+            cls.probe.terminate()
+            raise
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        _stop(cls.probe)
+
+    def _start_host_gate_front(self) -> int:
+        port = _free_port()
+        proc = subprocess.Popen(
+            [sys.executable, str(HOST_GATE_FRONT), str(port), str(self.probe_data)],
+            cwd=str(ROOT), stdout=DEVNULL, stderr=DEVNULL)
+        self.addCleanup(_stop, proc)
+        _wait_port(port)
+        return port
+
+    def test_hostless_request_is_adapted_and_marked(self):
+        """缺 Host 的请求：先被拒（400），补 Host 重试后可观测，且带标记。"""
+        from ced.probe.chain import ChainEvaluator
+
+        port = self._start_host_gate_front()
+        ev = ChainEvaluator(f"127.0.0.1:{port}", f"127.0.0.1:{self.probe_api}")
+        payload = (b"POST / HTTP/1.1\r\nContent-Length: 3\r\n\r\nabc")
+        obs = ev("front", payload)
+        self.assertEqual(obs.fields.get("front_adapted"), "补 Host 头",
+                         f"自适应重试没有发生：{obs.fields}")
+        self.assertGreater(obs.fields.get("forwarded_raw_len") or 0, 0,
+                           "实转字节数没有进观测")
+
+    def test_real_quantification_uses_measured_bytes(self):
+        """实机量化：from链路观测的实测字段算夹带，不经过模型。"""
+        from ced.contracts import Divergence, Observation
+        from ced.probe.chain import ChainEvaluator
+
+        port = self._start_host_gate_front()
+        ev = ChainEvaluator(f"127.0.0.1:{port}", f"127.0.0.1:{self.probe_api}")
+        payload = b"POST / HTTP/1.1\r\nContent-Length: 3\r\n\r\nabc"
+        obs = ev("front", payload)
+
+        div = Divergence(case_id="t0000001", axis="test", payload=payload,
+                         left=obs, right=Observation(impl_id="ref-cl-first"))
+        quant = ADAPTER.quantify(payload, "front", "ref-cl-first", div=div)
+        self.assertIsNotNone(quant, "有实测字段却返回了未量化")
+        self.assertIn("实机测量", quant.describe)
+        forwarded, back_consumed, smuggled = quant.numbers
+        self.assertEqual(forwarded, obs.fields["forwarded_raw_len"])
+        self.assertEqual(back_consumed, obs.fields.get("consumed") or 0)
+        self.assertGreaterEqual(smuggled, 0)
+
+    def test_variant_never_touches_present_host(self):
+        """带 Host 的请求不该被变形（改了就是伪造客户行为）。"""
+        from ced.probe.chain import ChainEvaluator
+
+        ev = ChainEvaluator("127.0.0.1:1", "127.0.0.1:2")
+        payload = b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n"
+        self.assertEqual(ev._variants(payload), [])
 
 
 if __name__ == "__main__":

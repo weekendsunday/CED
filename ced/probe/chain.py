@@ -156,6 +156,24 @@ class ChainEvaluator:
             return False
         return self._await_view(LIVENESS_PAYLOAD, response) is not None
 
+    def _variants(self, payload: bytes) -> list[tuple[str, bytes]]:
+        """被前置拒绝时尝试的「过门变形」。
+
+        只修复**部署位置造成**的缺失（比如内置语料里有些请求没带 Host 头 ——
+        真实攻击者一定会带），不改写任何与分歧语义相关的字节；改写过的变形
+        一律不做，否则观测到的就不是客户的行为了。
+        """
+        head, sep, body = payload.partition(b"\r\n\r\n")
+        variants: list[tuple[str, bytes]] = []
+        if not sep or b"\r\n" not in head:
+            return variants        # 裸 LF 等畸形行尾：补头必然改变分歧语义，不做
+        lines = head.split(b"\r\n")
+        has_host = any(ln.lower().startswith(b"host:") for ln in lines[1:])
+        if not has_host:
+            patched = b"\r\n".join([lines[0], b"Host: ced-probe.local"] + lines[1:])
+            variants.append(("补 Host 头", patched + b"\r\n\r\n" + body))
+        return variants
+
     def __call__(self, impl_id: str, payload: bytes) -> Observation:
         try:
             self.reset()
@@ -185,15 +203,38 @@ class ChainEvaluator:
             view = self._await_view(payload, last_response)
             if view is not None:
                 self._half_close = half_close        # 记住这个前置吃哪一套
+                fields = dict(view.get("fields", {}))
+                # 实测诊断字段：真实前置转发了多少字节（不进 compare_keys，只供
+                # 实机量化与 PoC --chain 使用 —— 见 adapters/http1_framing.quantify）
+                fields["forwarded_raw_len"] = view.get("raw_len")
                 return Observation(impl_id=impl_id,
                                    ok=view.get("ok", True),
                                    error=view.get("error"),
-                                   fields=view.get("fields", {}))
+                                   fields=fields)
             if not last and not last_response:
                 continue
             break
 
         if last_response:
+            # 过门变形：前置拒绝了，但请求缺的可能是**部署性**字段（如 Host）——
+            # 补上再试一次；变形仍被拒才判"前置拒绝"。变形成功的观测带
+            # ``front_adapted`` 诊断字段，报告里看得出它被改过。
+            for label, candidate in self._variants(payload):
+                try:
+                    self.reset()
+                    response = _send_raw(self.front, candidate,
+                                         half_close=self._half_close)
+                except OSError:
+                    continue
+                view = self._await_view(candidate, response)
+                if view is not None:
+                    fields = dict(view.get("fields", {}))
+                    fields["forwarded_raw_len"] = view.get("raw_len")
+                    fields["front_adapted"] = label
+                    return Observation(impl_id=impl_id,
+                                       ok=view.get("ok", True),
+                                       error=view.get("error"),
+                                       fields=fields)
             raise ProbeRejected(
                 f"前置 {self.label} 收到 {len(payload)} 字节，"
                 f"但未向后端转发任何字节（回了 {len(last_response)} 字节响应）"
