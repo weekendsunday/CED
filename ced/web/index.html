@@ -487,6 +487,7 @@ dialog.sheet-wide{width:min(1000px,94vw)}
 </head>
 <style>
 /* ===== 三栏工作区：左 检测历史 / 右 工作区（新增，不动既有样式）===== */
+html{scrollbar-gutter:stable}          /* 滚动条出现/消失不再引起整页横移 */
 .app{display:flex;gap:var(--s4);align-items:flex-start}
 .sidebar{flex:0 0 264px;position:sticky;top:var(--s3);max-height:calc(100vh - 40px);overflow:auto;
   background:var(--surface);border:1px solid var(--line);border-radius:var(--r2);box-shadow:var(--shadow)}
@@ -499,7 +500,7 @@ dialog.sheet-wide{width:min(1000px,94vw)}
 .side-item .t{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:var(--fs-2)}
 .side-item .badge{flex:0 0 auto;font-size:var(--fs-1)}
 .side-empty{color:var(--ink-3);font-size:var(--fs-2);padding:6px}
-.workspace{flex:1;min-width:0}
+.workspace{flex:1;min-width:0;min-height:640px}   /* 面板切换时页面高度不塌陷，侧栏不跳 */
 .modetabs{display:flex;gap:8px;margin-bottom:var(--s3)}
 .tabbtn{border:1px solid var(--line);background:var(--surface);color:var(--ink-2);padding:6px 16px;border-radius:999px;cursor:pointer;font-size:var(--fs-2)}
 .tabbtn.active{background:var(--accent);border-color:var(--accent);color:#fff}
@@ -2576,13 +2577,17 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
   let sideSel = null;                       // {kind:'cap'|'find', key}
   const dtHistory = [];                     // {ts, title, arr} —— 每次手动检测的发现集合
 
-  /* ---- 模式切换：手动检测 / 流量接入 ---- */
+  /* ---- 模式切换：手动检测 / 流量接入（状态写入 hash，可深链、可回退）---- */
   function setMode(m){
     mode = m;
     document.querySelectorAll('#mode-tabs .tabbtn').forEach(b =>
       b.classList.toggle('active', b.dataset.mode === m));
     $id('mode-manual').hidden = m !== 'manual';
     $id('mode-capture').hidden = m !== 'capture';
+    // 结果卡是手动检测的产出；接入模式下隐藏，避免"尚未开始检测"挂在流量面板上方
+    const resCard = $id('panel-report').closest('.card');
+    if (resCard) resCard.hidden = m !== 'manual';
+    history.replaceState(null, '', m === 'capture' ? '#capture' : '#manual');
   }
   document.querySelectorAll('#mode-tabs .tabbtn').forEach(b =>
     b.onclick = () => setMode(b.dataset.mode));
@@ -2683,6 +2688,7 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
   };
   window.__sideSync = () => sideRender();   // 捕获轮询里每轮调一次
   sideRender();
+  if (location.hash === '#capture') setMode('capture');   // 深链：/#capture 直接进接入模式
 })();
 </script>
 </body>
