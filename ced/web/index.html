@@ -2282,7 +2282,7 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
       statCard('请求', s.requests, '代理一共看到多少条请求（含重复）') +
       statCard('已分析', s.analyzed, '真正跑过差分 oracle 的请求数') +
       statCard('跳过', s.skipped, '静态资源 / 队列满 / 取不到观测对象') +
-      statCard('HTTPS 隧道', s.tunnels, 'CONNECT 直通、未拆包（本期不做 TLS 明文）') +
+      statCard('HTTPS 隧道', s.tunnels, 'CONNECT 未拆包（未启用本地 CA 解密，或客户端拒绝本地 CA）——里面有两个子类，见各条 skip 说明') +
       statCard('分歧', s.divergences, '所有已分析请求的分歧总数（跨 5 个领域）') +
       statCard('安全级请求', s.security_requests, '至少有一条 security 级分歧的请求数');
   }
@@ -2293,7 +2293,7 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
     if (!a) return '<span class="badge">分析中…</span>';
     if (a.security) return '<span class="badge security">安全级 ' + a.security + '</span>';
     if (a.divergences) return '<span class="badge unknown">疑点 ' + a.divergences + '</span>';
-    return '<span class="badge compatibility">一致</span>';
+    return '<span class="badge compatibility">已检测·一致</span>';
   }
   function rowHtml(r){
     const times = r.count > 1 ? ` <span class="badge" title="同一份字节又来了">×${r.count}</span>` : '';

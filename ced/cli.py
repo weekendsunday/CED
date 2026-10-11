@@ -656,7 +656,7 @@ def _cmd_capture(args: argparse.Namespace) -> int:
         if not analysis:
             print(f"{head:<72} {record.get('skip') or '（未分析）'}", flush=True)
             return
-        tag = {"security": "!! 安全级", "unknown": "疑点"}.get(analysis["level"], "一致")
+        tag = {"security": "!! 安全级", "unknown": "疑点"}.get(analysis["level"], "已检·一致")
         per = "  ".join(f"{name}:{row['divergences']}"
                         for name, row in analysis["domains"].items()
                         if row["divergences"])
