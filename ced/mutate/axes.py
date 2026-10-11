@@ -75,7 +75,7 @@ def case_te_value() -> list[bytes]:
         req(b"xchunked"),
         req(b"identity, chunked"),
         req(b"gzip, chunked"),
-        req(b"chunked"), req(b"chunked"),      # 重复头
+        req(b"chunked", b"chunked"),            # 重复头：两行 Transfer-Encoding: chunked
     ]
 
 

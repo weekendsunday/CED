@@ -23,7 +23,7 @@ POC_DIR = Path(__file__).resolve().parents[2] / "results" / "pocs"
 
 #: 记录里对外暴露的字段（下划线开头的私有字段一律不给出去）
 _PUBLIC_KEYS = ("ts", "seq", "case_id", "method", "host", "path", "target", "count",
-                "skip", "tunnel", "elapsed_ms", "analysis")
+                "skip", "tunnel", "mitm", "elapsed_ms", "analysis")
 
 
 def _brief(record: dict) -> dict:

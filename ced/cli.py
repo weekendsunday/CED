@@ -636,9 +636,10 @@ def _cmd_serve(args: argparse.Namespace) -> int:
 def _cmd_capture(args: argparse.Namespace) -> int:
     """自动捕获：把本机真实请求**自动**送进差分 oracle。
 
-    只做本机 HTTP 代理 —— 明文 HTTP 把请求收全，HTTPS 的 `CONNECT` 只做隧道直通：
-    不装驱动、不要管理员、不碰 TLS 明文。浏览器 / 客户端 / 系统代理指向本端口即可，
-    不用手动导出抓包、也不用粘贴请求。
+    本机 HTTP 代理：明文 HTTP 把请求收全；HTTPS 先尝试本地 CA 解密
+    （装有 `pip install cryptography` 时自动生成 CA，按提示信任后明文进差分，
+    解密只发生本机），客户端拒绝本地 CA（证书固定）或未装可选依赖时退回
+    CONNECT 隧道直通、如实计数。浏览器 / 客户端 / 系统代理指向本端口即可。
     """
     from .capture import Config, serve
 
@@ -669,7 +670,8 @@ def _cmd_capture(args: argparse.Namespace) -> int:
     return serve(Config(host=args.host, port=args.port,
                         jsonl=Path(args.jsonl) if args.jsonl else None,
                         domains=args.domain or None,
-                        analyze_all=args.analyze_all, on_result=show))
+                        analyze_all=args.analyze_all,
+                        mitm=not args.no_mitm, on_result=show))
 
 
 def _cmd_verify(args: argparse.Namespace) -> int:
@@ -846,6 +848,8 @@ def build_parser() -> argparse.ArgumentParser:
                      help="只跑这些领域（可重复；缺省 = 全部 5 个）")
     cap.add_argument("--analyze-all", action="store_true",
                      help="连静态资源也分析（默认跳过 .css/.js/图片等）")
+    cap.add_argument("--no-mitm", action="store_true",
+                     help="关闭本地 CA 解密：HTTPS 一律隧道直通（不拆包）")
     cap.set_defaults(func=_cmd_capture)
 
     r = sub.add_parser("regression", help="已知案例反验证（平台有效性自证，改判定后必跑）")

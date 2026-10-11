@@ -63,6 +63,11 @@ def ensure_ca() -> Path:
             .not_valid_before(now - datetime.timedelta(days=1))
             .not_valid_after(now + datetime.timedelta(days=CA_DAYS))
             .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+            .add_extension(x509.KeyUsage(digital_signature=True, content_commitment=False,
+                                         key_encipherment=False, data_encipherment=False,
+                                         key_agreement=False, key_cert_sign=True,
+                                         crl_sign=True, encipher_only=False,
+                                         decipher_only=False), critical=True)
             .sign(key, hashes.SHA256()))
     CA_KEY.write_bytes(key.private_bytes(
         serialization.Encoding.PEM,
@@ -86,7 +91,8 @@ def leaf_context(host: str, _cache: dict = {}, _lock: threading.Lock = threading
             return ctx
         _ensure_leaf(host)
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        ctx.load_cert_chain(HOSTS_DIR / f"{host}.crt", HOSTS_DIR / f"{host}.key.pem")
+        ctx.load_cert_chain(HOSTS_DIR / f"{host}.chain.crt",
+                            HOSTS_DIR / f"{host}.key.pem")
         _cache[host] = ctx
         return ctx
 
@@ -108,7 +114,8 @@ def _ensure_leaf(host: str) -> None:
     HOSTS_DIR.mkdir(parents=True, exist_ok=True)
     cert_path = HOSTS_DIR / f"{host}.crt"
     key_path = HOSTS_DIR / f"{host}.key.pem"
-    if cert_path.is_file() and key_path.is_file():
+    chain_path = HOSTS_DIR / f"{host}.chain.crt"
+    if chain_path.is_file() and key_path.is_file():
         return
 
     ca_key = serialization.load_pem_private_key(CA_KEY.read_bytes(), password=None)
@@ -116,7 +123,13 @@ def _ensure_leaf(host: str) -> None:
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, host)])
     now = datetime.datetime.now(datetime.timezone.utc)
-    san = x509.SubjectAlternativeName([x509.DNSName(host)])
+    san_names = [x509.DNSName(host)]
+    try:
+        import ipaddress
+        san_names.append(x509.IPAddress(ipaddress.ip_address(host)))
+    except ValueError:
+        pass                        # 不是 IP 字面量，DNS SAN 即可
+    san = x509.SubjectAlternativeName(san_names)
     cert = (x509.CertificateBuilder()
             .subject_name(name).issuer_name(ca_cert.subject)
             .public_key(key.public_key())
@@ -124,12 +137,23 @@ def _ensure_leaf(host: str) -> None:
             .not_valid_before(now - datetime.timedelta(days=1))
             .not_valid_after(now + datetime.timedelta(days=LEAF_DAYS))
             .add_extension(san, critical=False)
+            .add_extension(x509.KeyUsage(digital_signature=True, content_commitment=False,
+                                         key_encipherment=True, data_encipherment=False,
+                                         key_agreement=False, key_cert_sign=False,
+                                         crl_sign=False, encipher_only=False,
+                                         decipher_only=False), critical=True)
+            .add_extension(x509.ExtendedKeyUsage([x509.oid.ExtendedKeyUsageOID.SERVER_AUTH]),
+                           critical=False)
             .sign(ca_key, hashes.SHA256()))
     key_path.write_bytes(key.private_bytes(
         serialization.Encoding.PEM,
         serialization.PrivateFormat.PKCS8,
         serialization.NoEncryption()))
     cert_path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+    # 服务端要发「叶子 + CA」整链：Windows schannel 对只发叶子的自签链会报
+    # 0x80096004（签名无法验证），OpenSSL 客户端则无所谓 —— 发整链两边都过。
+    chain_path.write_bytes(cert.public_bytes(serialization.Encoding.PEM)
+                           + CA_CERT.read_bytes())
 
 
 def install_hint(ca: Path) -> str:

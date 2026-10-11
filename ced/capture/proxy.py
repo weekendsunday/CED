@@ -23,6 +23,7 @@ import base64
 import json
 import queue
 import socket
+import ssl
 import threading
 import time
 from collections import deque
@@ -32,6 +33,7 @@ from pathlib import Path
 
 from ..pipeline import case_id_of
 from .analyze import analyze
+from . import mitm as _mitm_mod
 
 #: 单个请求（头 + 体）的读取上限，防内存爆炸
 MAX_REQUEST = 1 << 20
@@ -59,6 +61,9 @@ class Config:
     jsonl: Path | None = None
     domains: list[str] | None = None          # None = 全部 5 个领域
     analyze_all: bool = False                 # True = 连静态资源也分析
+    #: True = 装有可选依赖 ``cryptography`` 时对 CONNECT 做本地 CA MITM（解密进差分）；
+    #: 没装则自动退回隧道直通，一律如实计数。False = 强制只做隧道直通。
+    mitm: bool = True
     on_result: object = None                  # callable(record) —— 给 CLI / 前端用
     stop: threading.Event = field(default_factory=threading.Event)
 
@@ -326,20 +331,51 @@ class CaptureProxy:
                 pass
 
     def _tunnel(self, conn: socket.socket, client: tuple, target: str) -> None:
-        """CONNECT：只记一条"未拆"，然后老老实实做双向隧道。
+        """CONNECT：能 MITM 就解密进差分，不能就老老实实做双向隧道（各自如实记录）。
 
         上游连不上也要**先记下来**再回 502 —— 探针/web 的职责是"如实记录我看到了什么"，
         连不上的那条 CONNECT 同样是证据（说明客户端试过访问那个站点）。
         """
         host, _, port_s = target.partition(":")
-        note = "HTTPS：CONNECT 隧道直通，不拆包（本期不做 TLS 明文）"
         upstream = None
         try:
             upstream = socket.create_connection((host, int(port_s or 443)),
                                                 timeout=UPSTREAM_TIMEOUT)
         except OSError as exc:
-            note = f"HTTPS：CONNECT 隧道（上游 {target} 不可达：{exc}）"
+            self._tunnel_record(conn, client, host, target,
+                                f"HTTPS：CONNECT 隧道（上游 {target} 不可达：{exc}）")
+            try:
+                conn.sendall(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n")
+            except OSError:
+                pass
+            return
+        conn.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
 
+        # 可选 MITM：装有 cryptography 且未关掉时，解密进差分；
+        # 没装 / 握手失败 / 用户关掉 → 隧道直通（如实计数），零依赖底线不动。
+        if self.cfg.mitm and _mitm_mod.mitm_available():
+            try:
+                self._mitm_relay(conn, upstream, host, client)
+                return
+            except ssl.SSLError as exc:
+                # 客户端拒绝了本地 CA（典型：证书固定）。这条连接已废 ——
+                # 客户端看到的是我们的证书，无法"退回"成隧道，只能如实记录。
+                self._tunnel_record(conn, client, host, target,
+                                    f"TLS 握手失败（疑似证书固定或不信任本地 CA）："
+                                    f"{exc.__class__.__name__}")
+                return
+            finally:
+                upstream.close()
+        try:
+            self._tunnel_record(conn, client, host, target,
+                                "HTTPS：CONNECT 隧道直通，不拆包"
+                                "（未启用本地 CA 解密：未装依赖或 --no-mitm）")
+            _pump(conn, upstream)
+        finally:
+            upstream.close()
+
+    def _tunnel_record(self, conn: socket.socket, client: tuple, host: str,
+                       target: str, note: str) -> None:
         with self.lock:
             self.seq += 1
             record = {"ts": datetime.now().isoformat(timespec="seconds"),
@@ -350,25 +386,57 @@ class CaptureProxy:
             self.records.append(record)
         self._emit(record)
 
-        if upstream is None:
-            try:
-                conn.sendall(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n")
-            except OSError:
-                pass
-            return
-        conn.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
-        try:
-            _pump(conn, upstream)
-        finally:
-            upstream.close()
+    def _mitm_relay(self, conn: socket.socket, upstream: socket.socket,
+                    host: str, client: tuple) -> None:
+        """对一条已建立的 CONNECT 隧道做本地 CA 中间人：明文请求进差分管线。
 
-    def _record_and_forward(self, conn: socket.socket, client: tuple, method: str,
-                            target: str, headers: dict, raw: bytes) -> None:
-        host, port, path = _upstream_of(target, headers)
-        # 分析对象 = 源站会看到的那份字节（见 _origin_form 的说明）；原始字节留证
-        analyzed = _origin_form(raw, path)
-        case_id = case_id_of(analyzed)
-        evidence = base64.b64encode(raw[:4096]).decode("ascii")
+        每条请求：读客户端明文 → 记录/入分析队列 → 用 TLS 转给真实站点 →
+        把响应原样送回客户端。上游我们主动带 ``Connection: close``（复用
+        :func:`_forward_bytes`），所以响应读到 EOF 即完整。
+        """
+        ca = _mitm_mod.ensure_ca()
+        client_tls = _mitm_mod.leaf_context(host).wrap_socket(conn, server_side=True)
+        up_tls = _mitm_mod.upstream_context().wrap_socket(upstream, server_hostname=host)
+        try:
+            client_tls.settimeout(UPSTREAM_TIMEOUT)
+            up_tls.settimeout(UPSTREAM_TIMEOUT)
+            while True:
+                try:
+                    raw = _read_request(client_tls)
+                except (OSError, ssl.SSLEOFError):
+                    break
+                if not raw:
+                    break
+                method, target, headers = _parse_head(_head_and_body(raw)[0])
+                self._enroll(raw, method, f"https://{host}{target}",
+                             host, target, client, mitm=True)
+                try:
+                    up_tls.sendall(_forward_bytes(raw))
+                    while True:
+                        chunk = up_tls.recv(65536)
+                        if not chunk:
+                            break
+                        client_tls.sendall(chunk)
+                except (OSError, ssl.SSLError):
+                    break
+        finally:
+            for sock in (client_tls, up_tls):
+                try:
+                    sock.close()
+                except OSError:
+                    pass
+
+    def _enroll(self, raw: bytes, method: str, target: str, host: str, path: str,
+                client: tuple, *, mitm: bool = False,
+                normalized: bool = False, evidence: bytes | None = None) -> None:
+        """记录一条请求并送进分析队列（HTTP 明文与 MITM 解密共用这一个口）。
+
+        ``raw`` 是**分析对象**（明文路径下是源站会看到的归一化字节）；
+        ``evidence`` 是**原始留证字节**（缺省 = raw，用于留证列）。
+        """
+        case_id = case_id_of(raw)
+        evidence = base64.b64encode((evidence if evidence is not None else raw)[:4096]
+                                    ).decode("ascii")
 
         with self.lock:
             self.seq += 1
@@ -383,9 +451,10 @@ class CaptureProxy:
                           "seq": self.seq, "client": f"{client[0]}:{client[1]}",
                           "case_id": case_id, "method": method, "target": target,
                           "host": host, "path": path, "tunnel": False, "count": 1,
-                          "skip": "", "analysis": None, "elapsed_ms": None,
+                          "mitm": mitm, "skip": "", "analysis": None,
+                          "elapsed_ms": None,
                           "raw_len": len(raw), "raw_b64": evidence,
-                          "normalized": analyzed != raw}
+                          "normalized": normalized}
                 self.seen[case_id] = record
                 self.records.append(record)
                 duplicate = False
@@ -398,13 +467,21 @@ class CaptureProxy:
                 record["skip"] = reason
                 self._emit(record)
             else:
-                record["raw"] = analyzed
+                record["raw"] = raw
                 try:
                     self.queue.put_nowait(record)
                 except queue.Full:
                     record.pop("raw", None)
                     record["skip"] = "分析队列已满（代理仍在正常转发）"
                     self._emit(record)
+
+    def _record_and_forward(self, conn: socket.socket, client: tuple, method: str,
+                            target: str, headers: dict, raw: bytes) -> None:
+        host, port, path = _upstream_of(target, headers)
+        # 分析对象 = 源站会看到的那份字节（见 _origin_form 的说明）；原始字节留证
+        analyzed = _origin_form(raw, path)
+        self._enroll(analyzed, method, target, host, path, client,
+                     normalized=analyzed != raw, evidence=raw)
 
         # 转发：只加 Connection: close，其余原样
         try:
@@ -446,10 +523,18 @@ class CaptureProxy:
         self.bind()
         server = self._server
         self.worker.start()
-        print(f"捕获代理已就绪：{self.cfg.host}:{self.cfg.port}"
-              f"（HTTP 明文；HTTPS 只做隧道直通）")
+        if self.cfg.mitm and _mitm_mod.mitm_available():
+            ca = _mitm_mod.ensure_ca()
+            print(f"捕获代理已就绪：{self.cfg.host}:{self.cfg.port}"
+                  f"（HTTP 明文 + HTTPS 本地 CA 解密；不信任本地 CA 的客户端走隧道直通）")
+            print(_mitm_mod.install_hint(ca))
+        else:
+            print(f"捕获代理已就绪：{self.cfg.host}:{self.cfg.port}"
+                  f"（HTTP 明文；HTTPS 只做隧道直通"
+                  + ("——已关闭 MITM）" if not self.cfg.mitm
+                    else "——装 `pip install cryptography` 可启用本地 CA 解密）"))
         print("把浏览器 / 客户端 / 系统代理指向它即可；Ctrl+C 停止。"
-              "仅用于你自有或已获授权的目标。")
+              "仅用于你自有或已获授权的目标。MITM 解密只发生本机，数据不出本机。")
         if self.cfg.jsonl:
             print(f"记录写入：{self.cfg.jsonl}", flush=True)
         try:
@@ -477,6 +562,8 @@ class CaptureProxy:
                 "analyzed": len(analyzed),
                 "skipped": len([r for r in self.records if r.get("skip")]),
                 "tunnels": len([r for r in self.records if r.get("tunnel")]),
+                "tls_failed": len([r for r in self.records
+                                   if "疑似证书固定" in (r.get("skip") or "")]),
                 "security_requests": len(security),
                 "divergences": sum(r["analysis"]["divergences"] for r in analyzed)}
 
@@ -485,7 +572,7 @@ def summary_line(parts: dict) -> str:
     """一行小结（Ctrl+C 收工时打印；测试也用它）。"""
     return (f"共看到 {parts['requests']} 条请求："
             f"分析 {parts['analyzed']} 条 · 跳过 {parts['skipped']} 条 · "
-            f"HTTPS 隧道 {parts['tunnels']} 条 · "
+            f"HTTPS 隧道 {parts['tunnels']} 条（其中握手失败 {parts.get('tls_failed', 0)} 条） · "
             f"分歧 {parts['divergences']} 处 · 安全级 {parts['security_requests']} 条请求")
 
 

@@ -15,6 +15,7 @@ import socket
 import sys
 import tempfile
 import threading
+import ssl
 import time
 import unittest
 import urllib.error
@@ -24,6 +25,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from ced.capture import Config, analyze
+from ced.capture import mitm as _mitm_mod
 from ced.capture.proxy import CaptureProxy
 from ced.web.server import _bind
 
@@ -200,7 +202,7 @@ class TestCaptureProxy(unittest.TestCase):
         self.assertIn("http1-framing", record["analysis"]["domains"])
 
     def test_connect_is_recorded_as_tunnel_and_not_decrypted(self):
-        """HTTPS 只做隧道直通：记一条「未拆」，但隧道本身要能双向通。"""
+        """HTTPS 隧道直通（--no-mitm / 未装可选依赖时的行为）：记一条「未拆」，双向能通。"""
         echo_port = _free_port()
         stop = threading.Event()
 
@@ -225,7 +227,9 @@ class TestCaptureProxy(unittest.TestCase):
         threading.Thread(target=echo, daemon=True).start()
         self.addCleanup(stop.set)
 
-        with socket.create_connection(("127.0.0.1", self.harness.port), timeout=10) as s:
+        harness = _ProxyHarness(mitm=False)          # 这个用例专门验「不拆包」路径
+        self.addCleanup(harness.close)
+        with socket.create_connection(("127.0.0.1", harness.port), timeout=10) as s:
             s.sendall(b"CONNECT 127.0.0.1:%d HTTP/1.1\r\nHost: 127.0.0.1:%d\r\n\r\n"
                       % (echo_port, echo_port))
             s.settimeout(5)
@@ -234,11 +238,71 @@ class TestCaptureProxy(unittest.TestCase):
             s.sendall(b"PING-THROUGH-TUNNEL")
             self.assertEqual(s.recv(4096), b"PING-THROUGH-TUNNEL")
 
-        self.assertTrue(_wait(lambda: len(self.harness.seen) >= 1))
-        record = self.harness.seen[0]
+        self.assertTrue(_wait(lambda: len(harness.seen) >= 1))
+        record = harness.seen[0]
         self.assertTrue(record["tunnel"])
         self.assertIsNone(record["analysis"])
         self.assertIn("不拆包", record["skip"])
+
+    def test_connect_mitm_decrypts_into_diff_pipeline(self):
+        """默认配置（装有 cryptography）：CONNECT 被本地 CA 解密，明文请求进差分管线。"""
+        if not _mitm_mod.mitm_available():
+            self.skipTest("未装 cryptography（可选依赖），MITM 不可用")
+        _mitm_mod.ensure_ca()
+        _mitm_mod.leaf_context("127.0.0.1")          # 预签发叶子证书，上游服务器要用
+
+        up_port = _free_port()
+        stop = threading.Event()
+        upstream_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        upstream_ctx.load_cert_chain(_mitm_mod.HOSTS_DIR / "127.0.0.1.crt",
+                                     _mitm_mod.HOSTS_DIR / "127.0.0.1.key.pem")
+
+        def tls_origin() -> None:
+            srv = socket.socket()
+            srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            srv.bind(("127.0.0.1", up_port))
+            srv.listen(4)
+            srv.settimeout(0.2)
+            while not stop.is_set():
+                try:
+                    conn, _ = srv.accept()
+                except socket.timeout:
+                    continue
+                except OSError:
+                    return
+                try:
+                    with upstream_ctx.wrap_socket(conn, server_side=True) as tls:
+                        data = tls.recv(4096)
+                        body = b'{"ok":true}'
+                        tls.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                                    b"Content-Length: %d\r\nConnection: close\r\n\r\n%s"
+                                    % (len(body), body))
+                except (OSError, ssl.SSLError):
+                    pass
+            srv.close()
+
+        threading.Thread(target=tls_origin, daemon=True).start()
+        self.addCleanup(stop.set)
+
+        with socket.create_connection(("127.0.0.1", self.harness.port), timeout=10) as s:
+            s.sendall(b"CONNECT 127.0.0.1:%d HTTP/1.1\r\nHost: 127.0.0.1:%d\r\n\r\n"
+                      % (up_port, up_port))
+            s.settimeout(5)
+            head = s.recv(4096)
+            self.assertIn(b"200 Connection Established", head)
+            tls = ssl.create_default_context(cafile=str(_mitm_mod.CA_CERT))
+            with tls.wrap_socket(s, server_hostname="127.0.0.1") as secure:
+                secure.sendall(b"GET /api/pay HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+                secure.settimeout(5)
+                resp = secure.recv(4096)
+            self.assertIn(b'{"ok":true}', resp, "响应没有从 TLS 上游中继回来")
+
+        self.assertTrue(_wait(lambda: len(self.harness.seen) >= 1))
+        record = [r for r in self.harness.seen if r.get("mitm")][-1]
+        self.assertEqual(record["method"], "GET")
+        self.assertEqual(record["path"], "/api/pay")
+        self.assertTrue(_wait(lambda: record.get("analysis")), "解密后的请求没有进差分")
+        self.assertIn("http1-framing", record["analysis"]["domains"])
 
     def test_unreachable_connect_is_still_recorded(self):
         """CONNECT 到连不上的上游：也要**留下记录**（"我看到了什么"必须如实记），并回 502。"""
