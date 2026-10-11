@@ -789,6 +789,7 @@ dialog.sheet-wide{width:min(1000px,94vw)}
         </fieldset>
         <fieldset class="set"><legend>自动捕获默认值</legend>
           <label>代理端口<input class="input" id="set-cap-port"></label>
+          <label>上游代理（可选；例 127.0.0.1:10090，流量链：浏览器 → 捕获 → 上游）<input class="input" id="set-cap-upstream" placeholder="留空 = 直连"></label>
           <label>记录文件（JSONL；留空 = 只留内存）<input class="input" id="set-cap-jsonl"></label>
           <label class="check"><input type="checkbox" id="set-cap-all"> <span>连静态资源也分析</span></label>
         </fieldset>
@@ -895,6 +896,8 @@ dialog.sheet-wide{width:min(1000px,94vw)}
       <span class="check"><input type="checkbox" id="cap-all"> <span>连静态资源也分析</span></span></label>
     <label class="sheet-row"><span class="k">记录文件</span>
       <input class="input" id="cap-jsonl" type="text" placeholder="留空 = 不写（例：ced-capture.jsonl）"></label>
+    <label class="sheet-row"><span class="k">上游代理</span>
+      <input class="input" id="cap-upstream" type="text" placeholder="可选；例 127.0.0.1:10090（流量链：浏览器 → 捕获 → 上游）"></label>
     <div class="note" id="cap-default-hint">默认值存在「设置」页，点下面的按钮就把这几个字段写进去</div>
     <div class="note" id="cap-dlg-state">当前状态：未启动</div>
   </div>
@@ -2170,6 +2173,7 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
     el('set-llm-temp').value = s.llm.temperature;
     el('set-llm-tokens').value = s.llm.max_tokens;
     el('set-cap-port').value = s.capture.port;
+    el('set-cap-upstream').value = s.capture.upstream || '';
     el('set-cap-jsonl').value = s.capture.jsonl || '';
     el('set-cap-all').checked = !!s.capture.analyze_all;
     el('set-scan-domain').value = s.scan.domain;
@@ -2187,6 +2191,7 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
       el('cap-port').value = s.capture.port;
       el('cap-all').checked = !!s.capture.analyze_all;
       el('cap-jsonl').value = s.capture.jsonl || '';
+      el('cap-upstream').value = s.capture.upstream || '';
       const doms = s.capture.domains || [];
       el('cap-domain').value = doms.length === 1 ? doms[0] : '';
       if (window.refreshCapSummary) window.refreshCapSummary();
@@ -2202,6 +2207,7 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
     const payload = {capture: {port: parseInt(el('cap-port').value, 10) || 18081,
                                analyze_all: el('cap-all').checked,
                                jsonl: jsonl,
+                               upstream: el('cap-upstream').value.trim(),
                                domains: dom ? [dom] : []}};
     try {
       const resp = await fetch('/api/settings', {method: 'POST',
@@ -2233,6 +2239,7 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
             max_tokens: parseInt(el('set-llm-tokens').value, 10) || 32768},
       capture: {port: parseInt(el('set-cap-port').value, 10) || 18081,
                 jsonl: el('set-cap-jsonl').value.trim(),
+                upstream: el('set-cap-upstream').value.trim(),
                 analyze_all: el('set-cap-all').checked},
       scan: {domain: el('set-scan-domain').value,
              mode: el('set-scan-mode').value,
@@ -2421,9 +2428,11 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
     const port = parseInt(box('cap-port').value, 10);
     const domain = box('cap-domain').value;
     const jsonl = box('cap-jsonl').value.trim();
+    const upstream = box('cap-upstream').value.trim();
     const payload = {port: isNaN(port) ? 18081 : port, analyze_all: box('cap-all').checked};
     if (domain) payload.domains = [domain];
     if (jsonl) payload.jsonl = jsonl;
+    if (upstream) payload.upstream = upstream;
     try {
       const d = await (await fetch('/api/capture/start', {method:'POST',
         headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)})).json();

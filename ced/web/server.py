@@ -396,8 +396,13 @@ class Handler(BaseHTTPRequestHandler):
         if analyze_all is None:
             analyze_all = bool(saved.get("analyze_all"))
         jsonl = body.get("jsonl") or saved.get("jsonl") or None
+        upstream = (str(body.get("upstream") or saved.get("upstream") or "").strip()
+                    or None)
+        if upstream and upstream.count(":") != 1:
+            return self._json({"error": "上游代理要写成 HOST:PORT（例 127.0.0.1:10090）"}, 400)
         result = CAPTURE.start(port=port, domains=domains or None,
-                               analyze_all=bool(analyze_all), jsonl=jsonl)
+                               analyze_all=bool(analyze_all), jsonl=jsonl,
+                               upstream=upstream)
         return self._json(result, 200 if result.get("ok") else 400)
 
     # ----------------------------------------------------------------- 业务

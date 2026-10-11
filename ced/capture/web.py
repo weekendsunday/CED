@@ -52,13 +52,14 @@ class CaptureRunner:
     # ------------------------------------------------------------------ 控制
 
     def start(self, *, port: int = 18081, domains=None, analyze_all: bool = False,
-              jsonl: str | None = None) -> dict:
+              jsonl: str | None = None, upstream: str | None = None) -> dict:
         with self._lock:
             if self.proxy is not None:
                 return {"error": f"已经在跑（端口 {self.proxy.cfg.port}）；先停止再改参数"}
             config = Config(port=port, domains=domains or None,
                             analyze_all=bool(analyze_all),
-                            jsonl=Path(jsonl) if jsonl else None)
+                            jsonl=Path(jsonl) if jsonl else None,
+                            upstream=upstream or None)
             proxy = CaptureProxy(config)
             try:
                 proxy.bind()

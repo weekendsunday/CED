@@ -64,6 +64,10 @@ class Config:
     #: True = 装有可选依赖 ``cryptography`` 时对 CONNECT 做本地 CA MITM（解密进差分）；
     #: 没装则自动退回隧道直通，一律如实计数。False = 强制只做隧道直通。
     mitm: bool = True
+    #: 上游代理（如公司/科学上网代理 ``127.0.0.1:10090``）：浏览器 → 本捕获 → 上游。
+    #: 给了它之后，所有出站连接（HTTP 明文、CONNECT 隧道、MITM 的上游侧）都先
+    #: 对上游发 CONNECT 隧道再走 —— 被墙站点才能通，捕获才真能挂进日常浏览。
+    upstream: str | None = None
     on_result: object = None                  # callable(record) —— 给 CLI / 前端用
     stop: threading.Event = field(default_factory=threading.Event)
 
@@ -221,6 +225,19 @@ def _head_and_body(raw: bytes) -> tuple[bytes, bytes]:
     return (head + b"\r\n\r\n") if sep else raw, (body if sep else b"")
 
 
+def _upstream_request(raw: bytes, host: str, port: int) -> bytes:
+    """经上游代理转发时的请求：连接用 CONNECT 隧道，但请求行要改回**绝对形式**
+    （有些上游对明文端口的 CONNECT 不放行，绝对形式是链式代理的标准做法）。"""
+    fb = _forward_bytes(raw)
+    lines = fb.split(b"\r\n")
+    parts = lines[0].split(b" ")
+    if len(parts) == 3:
+        lines[0] = b" ".join([parts[0],
+                              f"http://{host}:{port}".encode("latin-1") + parts[1],
+                              parts[2]])
+    return b"\r\n".join(lines)
+
+
 def _forward_bytes(raw: bytes) -> bytes:
     """转发用：把 Connection 换掉（其余原样），让上游读完即关。"""
     head, body = _head_and_body(raw)
@@ -330,6 +347,36 @@ class CaptureProxy:
             except OSError:
                 pass
 
+    # ------------------------------------------------------------------ 上游
+
+    def _connect_upstream(self, host: str, port: int) -> socket.socket:
+        """建立到真实目标的出站连接：配置了上游代理时先对它 CONNECT 隧道。"""
+        if not self.cfg.upstream:
+            return socket.create_connection((host, port), timeout=UPSTREAM_TIMEOUT)
+        up_host, _, up_port = self.cfg.upstream.rpartition(":")
+        sock = socket.create_connection((up_host or "127.0.0.1", int(up_port)),
+                                        timeout=UPSTREAM_TIMEOUT)
+        try:
+            sock.sendall(f"CONNECT {host}:{port} HTTP/1.1\r\n"
+                         f"Host: {host}:{port}\r\n\r\n".encode("ascii"))
+            reply = b""
+            while b"\r\n\r\n" not in reply:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    raise OSError("上游代理提前断开（CONNECT 无响应）")
+                reply += chunk
+            status = reply.split(b" ", 2)[1] if reply.startswith(b"HTTP/") else b""
+            if not status.startswith(b"2"):
+                raise OSError(f"上游代理拒绝 CONNECT {host}:{port}："
+                              f"{reply.splitlines()[0].decode('latin-1', 'replace')}")
+            return sock
+        except BaseException:
+            try:
+                sock.close()
+            except OSError:
+                pass
+            raise
+
     def _tunnel(self, conn: socket.socket, client: tuple, target: str) -> None:
         """CONNECT：能 MITM 就解密进差分，不能就老老实实做双向隧道（各自如实记录）。
 
@@ -339,8 +386,7 @@ class CaptureProxy:
         host, _, port_s = target.partition(":")
         upstream = None
         try:
-            upstream = socket.create_connection((host, int(port_s or 443)),
-                                                timeout=UPSTREAM_TIMEOUT)
+            upstream = self._connect_upstream(host, int(port_s or 443))
         except OSError as exc:
             self._tunnel_record(conn, client, host, target,
                                 f"HTTPS：CONNECT 隧道（上游 {target} 不可达：{exc}）")
@@ -483,10 +529,12 @@ class CaptureProxy:
         self._enroll(analyzed, method, target, host, path, client,
                      normalized=analyzed != raw, evidence=raw)
 
-        # 转发：只加 Connection: close，其余原样
+        # 转发：只加 Connection: close，其余原样；有上游代理时改绝对形式
         try:
-            with socket.create_connection((host, port), timeout=UPSTREAM_TIMEOUT) as up:
-                up.sendall(_forward_bytes(raw))
+            with self._connect_upstream(host, port) as up:
+                out = (_upstream_request(raw, host, port) if self.cfg.upstream
+                       else _forward_bytes(raw))
+                up.sendall(out)
                 while True:
                     chunk = up.recv(65536)
                     if not chunk:

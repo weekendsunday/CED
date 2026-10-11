@@ -671,7 +671,8 @@ def _cmd_capture(args: argparse.Namespace) -> int:
                         jsonl=Path(args.jsonl) if args.jsonl else None,
                         domains=args.domain or None,
                         analyze_all=args.analyze_all,
-                        mitm=not args.no_mitm, on_result=show))
+                        mitm=not args.no_mitm, on_result=show,
+                        upstream=args.upstream))
 
 
 def _cmd_verify(args: argparse.Namespace) -> int:
@@ -850,6 +851,8 @@ def build_parser() -> argparse.ArgumentParser:
                      help="连静态资源也分析（默认跳过 .css/.js/图片等）")
     cap.add_argument("--no-mitm", action="store_true",
                      help="关闭本地 CA 解密：HTTPS 一律隧道直通（不拆包）")
+    cap.add_argument("--upstream", default=None, metavar="HOST:PORT",
+                     help="上游代理（例 127.0.0.1:10090）：流量链 浏览器 → 捕获 → 上游")
     cap.set_defaults(func=_cmd_capture)
 
     r = sub.add_parser("regression", help="已知案例反验证（平台有效性自证，改判定后必跑）")

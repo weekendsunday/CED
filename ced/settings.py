@@ -34,6 +34,7 @@ DEFAULTS: dict = {
         "jsonl": "",             # 留空 = 只保留内存记录
         "analyze_all": False,    # 连静态资源也分析
         "domains": [],           # 空 = 全部 5 个领域
+        "upstream": "",          # 上游代理（例 127.0.0.1:10090）：浏览器 → 捕获 → 上游
     },
     "scan": {
         "domain": "http1-framing",
@@ -52,7 +53,8 @@ DEFAULTS: dict = {
 _TYPES = {
     "llm": {"base_url": str, "model": str, "api_key": str, "timeout": float,
             "temperature": float, "max_tokens": int},
-    "capture": {"port": int, "jsonl": str, "analyze_all": bool, "domains": list},
+    "capture": {"port": int, "jsonl": str, "analyze_all": bool, "domains": list,
+                "upstream": str},
     "scan": {"domain": str, "mode": str, "limit": int, "seed": int,
              "use_llm": bool},
     "paths": {"poc_dir": str, "report_dir": str},
