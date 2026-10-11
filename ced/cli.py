@@ -127,6 +127,7 @@ def _cmd_regression(_: argparse.Namespace) -> int:
         print(f"  [{'PASS' if o.passed else 'FAIL'}] {o.name:<{width}}  {o.detail}")
     passed = sum(1 for o in outcomes if o.passed)
     print(f"== 已知案例反验证：{passed}/{len(outcomes)} 通过 ==")
+    print(f"== {regression.real_obs_summary()} ==")
     return 0 if passed == len(outcomes) else 1
 
 
@@ -213,7 +214,7 @@ def _cmd_case(args: argparse.Namespace) -> int:
     print(f"判定      {verdict.level}")
     print(f"理由      {verdict.reason}")
     if verdict.ablation:
-        print(f"可控性    {verdict.ablation}")
+        print(f"消融证据    {verdict.ablation}")
     print(f"CWE       {verdict.cwe or '—'}"
           + (f"　场景 {verdict.scenario}" if verdict.scenario else ""))
     print(f"安全后果  {verdict.effect}")
@@ -290,7 +291,7 @@ def _cmd_probe(args: argparse.Namespace) -> int:
         print(f"  分歧字段  {', '.join(div.keys)}")
         print(f"  理由      {verdict.reason}")
         if verdict.ablation:
-            print(f"  可控性    {verdict.ablation}")
+            print(f"  消融证据    {verdict.ablation}")
         if verdict.cwe:
             print(f"  CWE       {verdict.cwe}　场景 {verdict.scenario}")
         print(f"  后果      {verdict.effect}")
@@ -341,15 +342,14 @@ def _cmd_poc(args: argparse.Namespace) -> int:
 
     print(f"用例      {poc.case_id}　　场景 {poc.scenario}　{poc.title}")
     print(f"链路      {poc.left} → {poc.right}　　判定 {poc.level}　CWE {poc.cwe or '—'}")
-    if poc.forwarded is None:
+    if poc.quant is None:
         print("字节归属  无法量化（两侧含非本地实现）—— 需在真实拓扑上复现")
     else:
-        print(f"字节归属  前置转发 {poc.forwarded} / 后端消费 {poc.back_consumed} / "
-              f"被夹带 {poc.smuggled_len} 字节")
+        print(f"字节归属  {poc.quant.describe}")
     print(f"样本      {poc.original_len} → {poc.sample_len} 字节")
 
     print(f"\n影响\n  {poc.impact}")
-    print(f"\n可控性证据\n  {poc.evidence}")
+    print(f"\n消融证据\n  {poc.evidence}")
     print(f"\n链式复现\n  {poc.chain_desc}")
 
     print("\n复现步骤")
@@ -751,6 +751,14 @@ def _cmd_verify(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_stats(args: argparse.Namespace) -> int:
+    """仓库规模数字单一真源 —— README 指标表从这里生成，不许手写。"""
+    from .stats import render_markdown
+
+    print(render_markdown())
+    return 0
+
+
 def _cmd_impls(args: argparse.Namespace) -> int:
     from .impls import axis_pairs, domains, local_specs, policy_for
 
@@ -865,6 +873,9 @@ def build_parser() -> argparse.ArgumentParser:
     i.add_argument("--domain", default=None, choices=sorted(ADAPTERS),
                    help="只看某个领域")
     i.set_defaults(func=_cmd_impls)
+
+    st = sub.add_parser("stats", help="生成仓库规模数字（README 指标表的单一真源）")
+    st.set_defaults(func=_cmd_stats)
 
     vf = sub.add_parser(
         "verify", help="验证外部发现：把 nuclei/Burp/清单的命中当假设，用同一条 oracle 链证实或证伪")

@@ -9,5 +9,14 @@
   ],
   "payload_b64": "UE9TVCAvIEhUVFAvMS4xDQpIb3N0OiBsb2NhbGhvc3QNClRyYW5zZmVyLUVuY29kaW5nOiB4Y2h1bmtlZA0KDQpoZWxsbw==",
   "reference": "RFC 9112 6.1",
-  "note": "非标准 TE token：一侧当作无体，另一侧当分块处理。"
+  "note": "非标准 TE token：一侧当作无体，另一侧当分块处理。",
+  "real_obs": {
+    "captured": "2026-10-11 docker 实机（docker/ 栈）",
+    "nginx:1.25.5": {
+      "rejected": 501
+    },
+    "nginx-gateway→gunicorn:0.5": {
+      "rejected": 501
+    }
+  }
 }

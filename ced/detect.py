@@ -219,7 +219,7 @@ def _run_raw(raw: bytes, domains: list[str] | None, rep: _Reporter,
     secure = [f for f in result.findings if f["level"] == "security"]
     if secure:
         rep.line("")
-        rep.line("## 安全级发现（每条都过了可控性消融）")
+        rep.line("## 安全级发现（每条都由消融定位到承载者）")
         for item in secure:
             rep.line("")
             rep.line(f"### `{item['case_id']}` · {item['domain']} · "
@@ -227,7 +227,7 @@ def _run_raw(raw: bytes, domains: list[str] | None, rep: _Reporter,
             rep.line(f"- 类型：`{item['kind']}`　CWE：{item['cwe'] or '—'}"
                      f"　场景：{item['scenario'] or '—'}")
             rep.line(f"- 判定理由：{item['reason'][:_MAX_REASON]}")
-            rep.line(f"- 可控性证据：{item['ablation'] or '—'}")
+            rep.line(f"- 消融证据：{item['ablation'] or '—'}")
             rep.line(f"- 安全后果：{item['effect'] or '—'}")
             rep.line(f"- 修复建议：{item['fix'] or '—'}")
         rep.stage("poc", "done", f"{len(secure)} 条安全级发现可直接生成端到端 PoC")

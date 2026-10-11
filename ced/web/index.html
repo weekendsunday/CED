@@ -1038,7 +1038,7 @@ function renderFinding(r){
         <span style="color:var(--dim);font-weight:400;font-size:12px">（${esc(r.kind)}）</span></h3>
     ${obsTable(r.observations, r.diff_keys, r.left, r.right)}
     <div class="kv"><span class="k">判定理由</span>${esc(r.reason)}</div>
-    ${r.ablation ? `<div class="kv"><span class="k">可控性证据</span>${esc(r.ablation)}</div>` : ''}
+    ${r.ablation ? `<div class="kv"><span class="k">消融证据</span>${esc(r.ablation)}</div>` : ''}
     ${r.cwe ? `<div class="kv"><span class="k">CWE</span>${esc(r.cwe)}
         ${r.scenario ? '　场景 <b>' + esc(r.scenario) + '</b>' : ''}</div>` : ''}
     <div class="kv"><span class="k">安全后果</span>${esc(r.effect)}</div>
@@ -1373,9 +1373,9 @@ async function loadScanMetrics(jobId){
       metricCard('用例数', iv(m.total_cases), '本次扫描真正喂进去的候选语料条数（含去重后的提案，不含被 limit 裁掉的）') +
       metricCard('实现对', iv(m.jobs), '本次扫描实际比对的实现组合数（axis 模式下 = 定向轴 + 未覆盖实现的交叉对照）') +
       metricCard('分歧数', iv(m.divergences), '同一份字节两侧结构理解不一致的条数（判定前的原始差分）') +
-      metricCard('安全级', iv(m.security), '分歧中由攻击者可控字节承载、可升级为实际漏洞的条数') +
+      metricCard('安全级', iv(m.security), '分歧中由攻击者可控字节承载、具备安全影响结构性前提的条数') +
       metricCard('安全占比', metricPct(m.security_share), '安全级 / 分歧数 —— 衡量分歧里有多大比例真的危险') +
-      metricCard('可控性证据率', metricPct(m.controllable_rate), '安全级发现里通过消融实验、证明攻击者可控的比例') +
+      metricCard('消融定位率', metricPct(m.controllable_rate), '安全级发现里通过消融实验定位到承载字节的比例') +
       metricCard('唯一化压缩比', metricPct(m.unique_case_ratio), '唯一 case_id 数 / 分歧数 —— 越低说明同一份字节被反复计入，有效发现越少') +
       metricCard('最小化压缩比', metricPct(m.minimize_ratio), 'Σ最小化后字节数 / Σ原始字节数（只算被最小化的发现）—— 越低代表性越好') +
       metricCard('单用例平均耗时', avg, '已用时 / 用例数 —— 扫描吞吐；没有用例时不显示');
@@ -1962,7 +1962,7 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
     let h = `<div class="kv"><span class="k">对象</span>${esc(titleOf(f))}</div>`;
     if (f.cwe) h += `<div class="kv"><span class="k">CWE</span>${esc(f.cwe)}　<span class="k">场景</span>${esc(f.scenario || '—')}</div>`;
     if (f.reason) h += `<div class="kv"><span class="k">判定理由</span>${esc(f.reason)}</div>`;
-    if (f.ablation) h += `<div class="kv"><span class="k">可控性证据</span>${esc(f.ablation)}</div>`;
+    if (f.ablation) h += `<div class="kv"><span class="k">消融证据</span>${esc(f.ablation)}</div>`;
     if (f.evidence) h += `<div class="kv"><span class="k">证据</span>${esc(f.evidence)}</div>`;
     if (f.detail) h += `<div class="kv"><span class="k">说明</span>${esc(f.detail)}</div>`;
     if (f.effect) h += `<div class="kv"><span class="k">安全后果</span>${esc(f.effect)}</div>`;
@@ -2351,7 +2351,7 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
         <div class="kv"><span class="k">对照</span>${esc(top.left)} ↔ ${esc(top.right)}　<span class="k">类型</span>${esc(top.kind)}</div>
         <div class="kv"><span class="k">CWE</span>${esc(top.cwe || '—')}　<span class="k">场景</span>${esc(top.scenario || '—')}</div>
         <div class="kv"><span class="k">判定理由</span>${esc(top.reason)}</div>
-        <div class="kv"><span class="k">可控性证据</span>${esc(top.ablation || '—')}</div>
+        <div class="kv"><span class="k">消融证据</span>${esc(top.ablation || '—')}</div>
         <div class="kv"><span class="k">安全后果</span>${esc(top.effect || '—')}</div>
         <div class="kv"><span class="k">修复建议</span>${esc(top.fix || '—')}</div>
         <div class="boundary">已证实 · 内核产出</div>

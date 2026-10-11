@@ -70,6 +70,7 @@ def run_check() -> int:
         print(f"  [{flag}] {outcome.name:<28} {outcome.detail}")
     passed = sum(1 for o in outcomes if o.passed)
     print(f"== 已知案例反验证：{passed}/{len(outcomes)} 通过 ==")
+    print(f"== {regression.real_obs_summary()} ==")
     if passed != len(outcomes):
         failed += 1
 

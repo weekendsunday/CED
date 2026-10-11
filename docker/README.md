@@ -459,3 +459,51 @@ python -m ced scan --topology ced/topologies/real-nginx-gunicorn.yaml --limit 12
 （没有任何 `proxy_set_header` 去写它们）、**改了** `Host`、`Connection`、并新增了一个
 `X-CED-Observer` 标记头。文件顶部明确写了这个 nginx 是「被观测的前置」而不是安全防护，
 对它唯一的要求是「如实按自己的定帧策略处理」。
+
+---
+
+## 实机验证记录（2026-10-11，Windows 11 开发机，引擎 29.7.2）
+
+另一台开发机（无预装镜像、走 Docker Hub + 系统代理 `127.0.0.1:10090`）从零起栈复跑，
+全部数字为当日实测：
+
+**环境坑（复现时先看）**
+
+1. Docker Hub 直连被 DNS 污染（`auth.docker.io` 解析到无效 IP）→ Docker Desktop
+   `settings-store.json` 需手动代理（键名大小写敏感：`ProxyHTTPMode` /
+   `OverrideProxyHTTP(S)`，写错大小写静默不生效）；daemon 侧表现为
+   `HTTPProxy = http.docker.internal:3128`。
+2. `%USERPROFILE%\.docker\config.json` 的 `credsStore: desktop` 在 docker CLI 不在
+   PATH 时会让 pull 报 `docker-credential-desktop not found` → 删掉该键即可拉公共镜像。
+3. **宿主 8080 被占时回环连接会被抢占**：本机 Burp 监听 `127.0.0.1:8080`，而 compose 把
+   front 发到 `0.0.0.0:8080` —— Windows 上更具体的回环绑定赢，`curl 127.0.0.1:8080`
+   打进的是 Burp 不是 nginx。用临时 override 把 front 映到空闲端口即可。
+4. compose 文件挂载在容器重建前可能拿到空文件（`default.conf` 0 字节）→
+   `--force-recreate front` 后恢复正常（3763 字节）。
+
+**实测发现（与模型口径的差异，全部是真实产品行为）**
+
+| # | 实测 | 含义 |
+|---|---|---|
+| 1 | 26 条 security 级最小样本（results/pocs）发给第一档真实 nginx：**全部 400/501 拒绝、零转发** | 第一档（纯 nginx）无走私面；security 结论的适用前提是「前置放行」 |
+| 2 | `Transfer-Encoding: xchunked` → nginx 回 **501**（不是 400） | 拒绝状态码口径要按实测写 |
+| 3 | `Transfer-Encoding: Chunked`（大小写变体）+ 合法 chunk 体：nginx 接受，**重定帧为 `CL: 5` 转发 114 字节**（模型按"透传已解析字节"记账是 79 字节） | 真实前置会改写请求，"前置转发字节数"的模型口径对会改写的前置不成立 —— 对照必须按字段（`framing_source`/`cl`/`consumed`）做，正是扫描链路已采用的做法 |
+| 4 | **客户端半关闭且请求体在途时，nginx 取消转发**（探针只记录到空连接；不半关闭则正常转发） | PoC 的 `--chain` 实机取证因此**不半关闭**，等响应/空闲超时 |
+| 5 | `Content-Length: 03`（带 Host 头）→ nginx 接受、归一化 `cl: 3` 转发 | 与 2026-10-02 记录一致 |
+
+**PoC 实机取证（`--chain`）**
+
+```
+python results/pocs/poc_984d5316.py --chain http://127.0.0.1:8801 --front 127.0.0.1:18080
+  → 模型预测前置转发 0 字节（按自身策略拒绝）；真实 nginx 1.25.5 确实拒绝、探针零视角
+  → verified: real-chain（exit 0）
+python results/pocs/poc_8b2611d2.py --chain http://127.0.0.1:8801 --front 127.0.0.1:18080
+  → 模型预测转发 39 字节，真实 nginx 拒绝 → 明确 MISMATCH 报告（exit 1，不伪造通过）
+```
+
+**第二档复跑**：`scan --topology real-nginx-gunicorn --limit 12` → 13 用例 / 前置拒绝
+126 条 / 33 分歧 / **2 安全级**（`8b2611d2`、`984d5316`，均为参照对；真实产品对
+`nginx-gunicorn` / `gunicorn-backend` 的分歧判 unknown 待人工复核）。
+
+**已知案例实机观测**：9 条分帧案例的 `real_obs` 字段（两档实采：拒绝状态码或转发后的
+定帧字段）已写入 `ced/cases/known/*.json`，`python -m ced regression` 输出按来源分列。

@@ -1,6 +1,6 @@
 """报告渲染。
 
-原则：**不夸大**。未通过可控性判定的分歧只标 unknown，绝不写成漏洞结论。
+原则：**不夸大**。消融实验未能定位到承载者的分歧只标 unknown，绝不写成漏洞结论。
 
 ``result_payload`` 是**单一真源**：报告 JSON、网页控制台、SSE 事件都从这里取形状，
 避免各写一遍导致字段漂移。
@@ -133,9 +133,9 @@ def render_markdown(result, *, domain: str = "http1-framing",
             out.append(f"- 同类其它样本：{others}{more}")
         out.append(f"- 判定理由：{v.reason}")
         if v.ablation:
-            out.append(f"- 可控性证据：{v.ablation}")
+            out.append(f"- 消融证据：{v.ablation}")
         out.append(f"- 安全后果：{v.effect}")
-        out.append(f"- CWE：{v.cwe or '—'}"
+        out.append(f"- CWE（候选，以实机复现为准）：{v.cwe or '—'}"
                    + (f"　场景：**{v.scenario}**" if v.scenario else ""))
         out.append(f"- 修复建议：{v.fix}")
         out.append("")
@@ -177,13 +177,14 @@ def render_markdown(result, *, domain: str = "http1-framing",
                 out.append("- 量化：无法计算（两侧含非本地实现）—— 需在真实拓扑上复现")
             if poc_dir:
                 out.append(f"- 可执行 PoC：`{poc_dir}/{poc.file_name}`"
-                           f"（离线算账；加 `--send HOST:PORT --i-am-authorized` 可真发）")
+                           f"（离线算账；`--chain http://127.0.0.1:8801` 实机取证；"
+                           f"`--send HOST:PORT --i-am-authorized` 可真发）")
             out.append("")
 
     out.append("---")
     out.append("")
-    out.append("> `security` 级 = 消息边界分歧 ∧ 分歧点由攻击者可控请求头承载。")
-    out.append("> 未通过可控性消融的分歧一律标为 `unknown`，不作结论。")
+    out.append("> `security` 级 = 结构性分歧 ∧ 由攻击者可直接发送的字节承载（结构性前提成立，不等于已实机利用）。")
+    out.append("> 消融实验未能定位承载者的分歧一律标为 `unknown`，不作结论。")
     return "\n".join(out)
 
 

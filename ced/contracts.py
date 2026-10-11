@@ -140,7 +140,7 @@ class Verdict:
     cwe: str | None = None
     scenario: str | None = None    # desync | bypass | None
     controllable: bool = False     # 分歧点是否由攻击者可控的字节承载
-    ablation: str | None = None    # 证明可控性的消融实验
+    ablation: str | None = None    # 消融实验：定位承载分歧的字节
     effect: str = ""               # 安全后果（判定时由领域适配器给出）
     fix: str = ""                  # 修复建议（同上）
 

@@ -9,5 +9,34 @@
   ],
   "payload_b64": "UE9TVCAvIEhUVFAvMS4xDQpIb3N0OiBsb2NhbGhvc3QNClRyYW5zZmVyLUVuY29kaW5nOiBjaHVua2VkDQoNCjUKaGVsbG8KMAoK",
   "reference": "RFC 9112 7.1 (chunked 行尾必须 CRLF)",
-  "note": "分块行尾用裸 LF：一侧报错，另一侧照常解析。"
+  "note": "分块行尾用裸 LF：一侧报错，另一侧照常解析。",
+  "real_obs": {
+    "captured": "2026-10-11 docker 实机（docker/ 栈）",
+    "nginx:1.25.5": {
+      "forwarded": {
+        "raw_len": 114,
+        "accepted": true,
+        "status": 200,
+        "framing_source": "cl",
+        "cl": 5,
+        "te": [],
+        "body_len": 5,
+        "consumed": 114,
+        "leftover_len": 0
+      }
+    },
+    "nginx-gateway→gunicorn:0.5": {
+      "forwarded": {
+        "raw_len": 264,
+        "accepted": true,
+        "status": 200,
+        "framing_source": "cl",
+        "cl": 5,
+        "te": [],
+        "body_len": 5,
+        "consumed": 264,
+        "leftover_len": 0
+      }
+    }
+  }
 }

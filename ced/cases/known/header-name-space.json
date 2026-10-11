@@ -9,5 +9,14 @@
   ],
   "payload_b64": "UE9TVCAvIEhUVFAvMS4xDQpIb3N0OiBsb2NhbGhvc3QNCkNvbnRlbnQtTGVuZ3RoIDogMw0KDQphYmM=",
   "reference": "HTTP 头字段名与冒号之间禁止空白 (RFC 9110 5.1)",
-  "note": "冒号前空格：一侧拒绝整条请求，另一侧裁剪后照常解析 —— 经典走私变体族。"
+  "note": "冒号前空格：一侧拒绝整条请求，另一侧裁剪后照常解析 —— 经典走私变体族。",
+  "real_obs": {
+    "captured": "2026-10-11 docker 实机（docker/ 栈）",
+    "nginx:1.25.5": {
+      "rejected": 400
+    },
+    "nginx-gateway→gunicorn:0.5": {
+      "rejected": 400
+    }
+  }
 }

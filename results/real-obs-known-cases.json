@@ -1,0 +1,163 @@
+{
+ "chunk-bare-lf": {
+  "payload_len": 75,
+  "nginx_1_25_5": {
+   "forwarded": {
+    "raw_len": 114,
+    "accepted": true,
+    "status": 200,
+    "framing_source": "cl",
+    "cl": 5,
+    "te": [],
+    "body_len": 5,
+    "consumed": 114,
+    "leftover_len": 0
+   }
+  },
+  "nginx_gunicorn": {
+   "forwarded": {
+    "raw_len": 264,
+    "accepted": true,
+    "status": 200,
+    "framing_source": "cl",
+    "cl": 5,
+    "te": [],
+    "body_len": 5,
+    "consumed": 264,
+    "leftover_len": 0
+   }
+  }
+ },
+ "cl-leading-zero": {
+  "payload_len": 59,
+  "nginx_1_25_5": {
+   "forwarded": {
+    "raw_len": 112,
+    "accepted": true,
+    "status": 200,
+    "framing_source": "cl",
+    "cl": 3,
+    "te": [],
+    "body_len": 3,
+    "consumed": 112,
+    "leftover_len": 0
+   }
+  },
+  "nginx_gunicorn": {
+   "forwarded": {
+    "raw_len": 262,
+    "accepted": true,
+    "status": 200,
+    "framing_source": "cl",
+    "cl": 3,
+    "te": [],
+    "body_len": 3,
+    "consumed": 262,
+    "leftover_len": 0
+   }
+  }
+ },
+ "cl-te-conflict": {
+  "payload_len": 132,
+  "nginx_1_25_5": {
+   "rejected": 400
+  },
+  "nginx_gunicorn": {
+   "rejected": 400
+  }
+ },
+ "dup-cl-conflict": {
+  "payload_len": 79,
+  "nginx_1_25_5": {
+   "rejected": 400
+  },
+  "nginx_gunicorn": {
+   "rejected": 400
+  }
+ },
+ "header-name-space": {
+  "payload_len": 59,
+  "nginx_1_25_5": {
+   "rejected": 400
+  },
+  "nginx_gunicorn": {
+   "rejected": 400
+  }
+ },
+ "obs-fold": {
+  "payload_len": 80,
+  "nginx_1_25_5": {
+   "rejected": 400
+  },
+  "nginx_gunicorn": {
+   "rejected": 400
+  }
+ },
+ "request-line-absolute-uri": {
+  "payload_len": 74,
+  "nginx_1_25_5": {
+   "forwarded": {
+    "raw_len": 112,
+    "accepted": true,
+    "status": 200,
+    "framing_source": "cl",
+    "cl": 3,
+    "te": [],
+    "body_len": 3,
+    "consumed": 112,
+    "leftover_len": 0
+   }
+  },
+  "nginx_gunicorn": {
+   "forwarded": {
+    "raw_len": 262,
+    "accepted": true,
+    "status": 200,
+    "framing_source": "cl",
+    "cl": 3,
+    "te": [],
+    "body_len": 3,
+    "consumed": 262,
+    "leftover_len": 0
+   }
+  }
+ },
+ "te-bad-token": {
+  "payload_len": 70,
+  "nginx_1_25_5": {
+   "rejected": 501
+  },
+  "nginx_gunicorn": {
+   "rejected": 501
+  }
+ },
+ "te-case-sensitive": {
+  "payload_len": 79,
+  "nginx_1_25_5": {
+   "forwarded": {
+    "raw_len": 114,
+    "accepted": true,
+    "status": 200,
+    "framing_source": "cl",
+    "cl": 5,
+    "te": [],
+    "body_len": 5,
+    "consumed": 114,
+    "leftover_len": 0
+   }
+  },
+  "nginx_gunicorn": {
+   "forwarded": {
+    "raw_len": 264,
+    "accepted": true,
+    "status": 200,
+    "framing_source": "cl",
+    "cl": 5,
+    "te": [],
+    "body_len": 5,
+    "consumed": 264,
+    "leftover_len": 0
+   }
+  }
+ }
+}

@@ -92,6 +92,24 @@ def policy_for(adapter, impl_id: str):
     return lookup(adapter.name, impl_id)
 
 
+def real_obs_summary(cases: list[dict] | None = None,
+                     directory: Path | str = CASES_DIR) -> str:
+    """已知案例里带实机观测记录（``real_obs``）的条数与产品清单。
+
+    ``real_obs`` 是 docker 实机采到的真实产品观测（拒绝状态码 / 转发后的定帧
+    字段），只作证据存档与口径对照，**不参与** 47/47 的判定 —— 模型内反验证与
+    实机观测是两回事，混在一起就会互相污染口径。
+    """
+    cases = cases if cases is not None else load_cases(directory)
+    with_obs = [c for c in cases if c.get("real_obs")]
+    if not with_obs:
+        return "实机观测记录：无（cases/known 里没有 real_obs 字段）"
+    products = sorted({p for c in with_obs for p in c["real_obs"]
+                       if p != "captured"})
+    return (f"实机观测记录：{len(with_obs)}/{len(cases)} 条案例带真实产品观测"
+            f"（{', '.join(products)}）")
+
+
 def run(directory: Path | str = CASES_DIR,
         cases: list[dict] | None = None) -> list[CaseOutcome]:
     """跑全部已知案例。每个案例按自己的 ``domain`` 选适配器（缺省分帧领域）。"""

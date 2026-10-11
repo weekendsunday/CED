@@ -9,5 +9,34 @@
   ],
   "payload_b64": "UE9TVCAvIEhUVFAvMS4xDQpIb3N0OiBsb2NhbGhvc3QNClRyYW5zZmVyLUVuY29kaW5nOiBDaHVua2VkDQoNCjUNCmhlbGxvDQowDQoNCg==",
   "reference": "RFC 9112 6.1 (编码名大小写不敏感)",
-  "note": "编码名大小写：一侧识别为 chunked，另一侧不识别。"
+  "note": "编码名大小写：一侧识别为 chunked，另一侧不识别。",
+  "real_obs": {
+    "captured": "2026-10-11 docker 实机（docker/ 栈）",
+    "nginx:1.25.5": {
+      "forwarded": {
+        "raw_len": 114,
+        "accepted": true,
+        "status": 200,
+        "framing_source": "cl",
+        "cl": 5,
+        "te": [],
+        "body_len": 5,
+        "consumed": 114,
+        "leftover_len": 0
+      }
+    },
+    "nginx-gateway→gunicorn:0.5": {
+      "forwarded": {
+        "raw_len": 264,
+        "accepted": true,
+        "status": 200,
+        "framing_source": "cl",
+        "cl": 5,
+        "te": [],
+        "body_len": 5,
+        "consumed": 264,
+        "leftover_len": 0
+      }
+    }
+  }
 }

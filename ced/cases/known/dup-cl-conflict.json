@@ -9,5 +9,14 @@
   ],
   "payload_b64": "UE9TVCAvIEhUVFAvMS4xDQpIb3N0OiBsb2NhbGhvc3QNCkNvbnRlbnQtTGVuZ3RoOiA1DQpDb250ZW50LUxlbmd0aDogNA0KDQpBQUFBQQ==",
   "reference": "RFC 9112 6.2",
-  "note": "冲突 CL：一侧按 400 拒绝，另一侧取第一个值，消费字节数不同。"
+  "note": "冲突 CL：一侧按 400 拒绝，另一侧取第一个值，消费字节数不同。",
+  "real_obs": {
+    "captured": "2026-10-11 docker 实机（docker/ 栈）",
+    "nginx:1.25.5": {
+      "rejected": 400
+    },
+    "nginx-gateway→gunicorn:0.5": {
+      "rejected": 400
+    }
+  }
 }

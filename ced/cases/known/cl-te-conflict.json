@@ -9,5 +9,14 @@
   ],
   "payload_b64": "UE9TVCAvIEhUVFAvMS4xDQpIb3N0OiBsb2NhbGhvc3QNCkNvbnRlbnQtTGVuZ3RoOiA0OA0KVHJhbnNmZXItRW5jb2Rpbmc6IGNodW5rZWQNCg0KMA0KDQpHRVQgL3NtdWdnbGVkIEhUVFAvMS4xDQpIb3N0OiBsb2NhbGhvc3QNCg0K",
   "reference": "RFC 9112 6.3; PortSwigger HTTP request smuggling (CL.TE)",
-  "note": "CL 覆盖整段 body，TE 在 0 块处结束第一个请求，其后字节构成被夹带的下一条请求。"
+  "note": "CL 覆盖整段 body，TE 在 0 块处结束第一个请求，其后字节构成被夹带的下一条请求。",
+  "real_obs": {
+    "captured": "2026-10-11 docker 实机（docker/ 栈）",
+    "nginx:1.25.5": {
+      "rejected": 400
+    },
+    "nginx-gateway→gunicorn:0.5": {
+      "rejected": 400
+    }
+  }
 }

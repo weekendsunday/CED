@@ -9,5 +9,14 @@
   ],
   "payload_b64": "UE9TVCAvIEhUVFAvMS4xDQpIb3N0OiBsb2NhbGhvc3QNClgtQTogMQ0KIGZvbGRlZC1wYXJ0DQpDb250ZW50LUxlbmd0aDogMw0KDQphYmM=",
   "reference": "RFC 9112 5.2 (obs-fold 已废弃)",
-  "note": "折行头：一侧拒绝，另一侧接受并拼接。"
+  "note": "折行头：一侧拒绝，另一侧接受并拼接。",
+  "real_obs": {
+    "captured": "2026-10-11 docker 实机（docker/ 栈）",
+    "nginx:1.25.5": {
+      "rejected": 400
+    },
+    "nginx-gateway→gunicorn:0.5": {
+      "rejected": 400
+    }
+  }
 }

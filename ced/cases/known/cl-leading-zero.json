@@ -9,5 +9,34 @@
   ],
   "payload_b64": "UE9TVCAvIEhUVFAvMS4xDQpIb3N0OiBsb2NhbGhvc3QNCkNvbnRlbnQtTGVuZ3RoOiAwMw0KDQphYmM=",
   "reference": "RFC 9112 6.3 (Content-Length 语法)",
-  "note": "前导零：严格实现判为非法 CL，宽松实现接受。"
+  "note": "前导零：严格实现判为非法 CL，宽松实现接受。",
+  "real_obs": {
+    "captured": "2026-10-11 docker 实机（docker/ 栈）",
+    "nginx:1.25.5": {
+      "forwarded": {
+        "raw_len": 112,
+        "accepted": true,
+        "status": 200,
+        "framing_source": "cl",
+        "cl": 3,
+        "te": [],
+        "body_len": 3,
+        "consumed": 112,
+        "leftover_len": 0
+      }
+    },
+    "nginx-gateway→gunicorn:0.5": {
+      "forwarded": {
+        "raw_len": 262,
+        "accepted": true,
+        "status": 200,
+        "framing_source": "cl",
+        "cl": 3,
+        "te": [],
+        "body_len": 3,
+        "consumed": 262,
+        "leftover_len": 0
+      }
+    }
+  }
 }
