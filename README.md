@@ -30,8 +30,8 @@ $$\text{漏洞} \iff \text{语义分歧} \;\wedge\; \text{分歧点攻击者可�
 **只需要 Python 3.11+。零第三方依赖，不需要 Docker，不需要联网。**
 
 ```bash
-git clone https://github.com/weekendsunday/CED----.git
-cd CED----
+git clone https://github.com/weekendsunday/CED.git
+cd CED
 
 python main.py                    # 启动网页界面（推荐，点鼠标就行）
 ```
