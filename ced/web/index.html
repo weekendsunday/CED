@@ -485,6 +485,33 @@ dialog.sheet-wide{width:min(1000px,94vw)}
 .levels .lv.good{border-color:var(--good-line);background:var(--good-soft);color:var(--good)}
 </style>
 </head>
+<style>
+/* ===== 三栏工作区：左 检测历史 / 右 工作区（新增，不动既有样式）===== */
+.app{display:flex;gap:var(--s4);align-items:flex-start}
+.sidebar{flex:0 0 264px;position:sticky;top:var(--s3);max-height:calc(100vh - 40px);overflow:auto;
+  background:var(--surface);border:1px solid var(--line);border-radius:var(--r2);box-shadow:var(--shadow)}
+.side-hd{display:flex;align-items:baseline;justify-content:space-between;gap:8px;padding:14px 14px 8px;font-weight:600}
+.side-list{padding:0 8px 10px}
+.side-day{color:var(--ink-3);font-size:var(--fs-1);margin:10px 6px 4px;white-space:nowrap}
+.side-item{display:flex;align-items:center;gap:6px;padding:7px 9px;border-radius:var(--r1);cursor:pointer;min-width:0}
+.side-item:hover{background:var(--accent-soft)}
+.side-item.sel{background:var(--accent-soft);box-shadow:inset 0 0 0 1px var(--accent)}
+.side-item .t{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:var(--fs-2)}
+.side-item .badge{flex:0 0 auto;font-size:var(--fs-1)}
+.side-empty{color:var(--ink-3);font-size:var(--fs-2);padding:6px}
+.workspace{flex:1;min-width:0}
+.modetabs{display:flex;gap:8px;margin-bottom:var(--s3)}
+.tabbtn{border:1px solid var(--line);background:var(--surface);color:var(--ink-2);padding:6px 16px;border-radius:999px;cursor:pointer;font-size:var(--fs-2)}
+.tabbtn.active{background:var(--accent);border-color:var(--accent);color:#fff}
+details.sect{margin-top:var(--s4);min-width:0}
+details.sect>summary{list-style:none;cursor:pointer}
+details.sect>summary::-webkit-details-marker{display:none}
+details.sect>summary::after{content:'展开 ▾';margin-left:auto;color:var(--ink-3);font-weight:400}
+details.sect[open]>summary::after{content:'收起 ▴'}
+details.sect[open]>summary{border-bottom:1px solid var(--line)}
+.meta-line{color:var(--ink-3);font-size:var(--fs-1);margin:6px 0 0;letter-spacing:.02em}
+@media (max-width:980px){.app{flex-direction:column}.sidebar{position:static;flex:none;max-height:200px;width:auto}}
+</style>
 <body>
 <header class="masthead">
   <div class="shell">
@@ -493,18 +520,25 @@ dialog.sheet-wide{width:min(1000px,94vw)}
       <p class="sub">将同一份请求字节交由<b>多个实现</b>独立解析，识别其对协议语义的解释差异，
         定位可由外部输入承载的分歧点，并输出可复核的证据链与复现脚本。
         结论由确定性判定引擎给出，全部证据可离线复核。仅限授权范围内使用。</p>
+      <p class="meta-line">5 个领域 · 51 个参照实现 · 47 条已知案例 · 零第三方依赖</p>
     </div>
-    <ul class="capbar">
-      <li data-cap="domains"><span class="cap-n">—</span><span class="cap-k">已注册领域</span></li>
-      <li data-cap="impls"><span class="cap-n">—</span><span class="cap-k">参照实现</span></li>
-      <li data-cap="cases"><span class="cap-n">—</span><span class="cap-k">已知案例</span></li>
-      <li data-cap="deps" class="cap-zero"><span class="cap-n">0</span><span class="cap-k">第三方依赖</span></li>
-    </ul>
   </div>
 </header>
 
 <main class="shell">
-  <!-- ============ 扫描 ============ -->
+<div class="app">
+<aside class="sidebar">
+  <div class="side-hd">检测历史 <span class="hint" id="side-count"></span></div>
+  <div class="side-list" id="side-list">
+    <div class="side-empty">暂无记录；这里会按日期归档本次会话内的手动检测与流量接入</div>
+  </div>
+</aside>
+<div class="workspace">
+<div class="modetabs" id="mode-tabs">
+  <button type="button" class="tabbtn active" data-mode="manual">手动检测</button>
+  <button type="button" class="tabbtn" data-mode="capture">流量接入</button>
+</div>
+<div id="mode-manual">
   <!-- ============ 检测：唯一入口 ============ -->
   <section id="tab-detect">
     <div class="card">
@@ -521,58 +555,62 @@ dialog.sheet-wide{width:min(1000px,94vw)}
         <select class="select" id="dt-sample"><option value="">载入示例…</option></select>
         <select class="select" id="dt-domain"><option value="">全部 5 个领域</option></select>
       </div>
+      <div class="toolbar"><span class="note" id="dt-hint">输入格式自动识别；结论由确定性判定引擎给出，全部证据可复核</span></div>
+      <div id="dt-err"></div>
+      <div id="dt-warn"></div>
+      <div class="note">注意 <b>字节保真</b>：HTTP 请求请使用「选择文件」读入抓包导出的 .bin/.txt（按字节读入），
+        或使用「流量接入」实时捕获；粘贴文本时浏览器会将 CRLF 规范化为 LF（对 nuclei / curl / URL 清单等
+        文本类输入无影响）。含中文的文本文件在框内显示可能乱码，不影响分析。</div>
+      <div class="dag-bar" style="margin-top:var(--s3)"><span class="note"><b>执行进度</b></span>
+        <span class="state" id="dt-chain">待运行</span>
+        <span class="note" id="dt-elapsed"></span></div>
+      <div class="dag" id="dt-dag"></div>
+      <div class="note" id="dt-dag-detail">—</div>
+    </div>
+</section>
+</div>
+
+    <div class="card">
+      <div class="card-hd">
+        <div class="tabs" id="res-tabs">
+          <button type="button" class="tabbtn active" data-panel="panel-report">实时报告</button>
+          <button type="button" class="tabbtn" data-panel="panel-findings">发现</button>
+        </div>
+        <span id="res-acts-report" class="hd-right">
+          <button class="btn btn-ghost" id="dt-copy">复制报告</button>
+          <button class="btn btn-ghost" id="dt-download">下载 .md</button>
+        </span>
+        <span id="res-acts-findings" class="hint" hidden>security 级发现附带可执行复现脚本</span>
+      </div>
+      <div id="panel-report"><pre class="report" id="dt-report">尚未开始检测</pre></div>
+      <div id="panel-findings" hidden>
+        <div class="split">
+          <div><div class="toolbar">
+            <select class="select" id="dt-filter">
+              <option value="all">全部</option>
+              <option value="flagged">只看安全级 / 已证实</option>
+              <option value="uncertain">只看疑点 / 未证实 / 证不了</option>
+            </select></div>
+            <div class="levels" id="dt-levels"></div>
+            <div class="note" id="dt-count">0 条</div><div class="evlist" id="dt-list">
+            <div class="empty"><b>暂无结果</b>请在上方点击「开始检测」</div></div></div>
+          <div><div id="dt-evidence" class="note">← 请选择左侧条目</div></div>
+        </div>
+      </div>
+    </div>
+
+</div>
+<div id="mode-capture" hidden>
+    <div class="card">
+      <div class="card-hd"><h2>流量接入</h2>
+        <span class="hint">将浏览器 / 客户端代理指向下方端口，流量将自动进入检测流程；HTTPS 经本地证书解密（可选），全部数据仅保留本机。仅用于已获授权的目标</span></div>
       <div class="toolbar">
-        <span class="note">或实时接入流量：</span>
         <button class="btn btn-ghost" id="cap-go">开始流量接入</button>
         <button class="btn btn-danger" id="cap-stop" disabled>停止接入</button>
         <span class="note" id="cap-state">未启动</span>
         <button class="btn btn-ghost cap-settings" id="cap-open">捕获参数…</button>
         <span class="note" id="cap-summary">端口 18081 · 全部 5 个领域 · 跳过静态资源 · 不写记录文件</span>
       </div>
-      <div class="toolbar"><span class="note" id="dt-hint">输入格式自动识别；结论由确定性判定引擎给出，全部证据可复核</span></div>
-      </div>
-      <div id="dt-err"></div>
-      <div id="dt-warn"></div>
-      <div class="note">注意 <b>字节保真</b>：HTTP 请求请使用「选择文件」读入抓包导出的 .bin/.txt（按字节读入），
-        或使用「流量接入」实时捕获；粘贴文本时浏览器会将 CRLF 规范化为 LF（对 nuclei / curl / URL 清单等
-        文本类输入无影响）。含中文的文本文件在框内显示可能乱码，不影响分析。</div>
-    </div>
-
-    <div class="card">
-      <div class="card-hd"><h2>执行进度</h2><span class="hint">各阶段实时状态（绿 = 完成，蓝 = 执行中）</span></div>
-      <div class="dag-bar"><span class="state" id="dt-chain">待运行</span>
-        <span class="note" id="dt-elapsed"></span></div>
-      <div class="dag" id="dt-dag"></div>
-      <div class="note" id="dt-dag-detail">—</div>
-    </div>
-
-    <div class="card">
-      <div class="card-hd"><h2>实时报告</h2><span class="hint">检测过程中持续输出，无需等待完成</span>
-        <button class="btn btn-ghost" id="dt-copy">复制报告</button>
-        <button class="btn btn-ghost" id="dt-download">下载 .md</button></div>
-      <pre class="report" id="dt-report">尚未开始检测</pre>
-    </div>
-
-    <div class="card">
-      <div class="card-hd"><h2>发现</h2><span class="hint">选择条目查看完整证据链；security 级发现附带可执行复现脚本</span></div>
-      <div class="split">
-        <div><div class="toolbar">
-          <select class="select" id="dt-filter">
-            <option value="all">全部</option>
-            <option value="flagged">只看安全级 / 已证实</option>
-            <option value="uncertain">只看疑点 / 未证实 / 证不了</option>
-          </select></div>
-          <div class="levels" id="dt-levels"></div>
-          <div class="note" id="dt-count">0 条</div><div class="evlist" id="dt-list">
-          <div class="empty"><b>暂无结果</b>请在上方点击「开始检测」</div></div></div>
-        <div><div id="dt-evidence" class="note">← 请选择左侧条目</div></div>
-      </div>
-    </div>
-
-    <div class="card">
-      <div class="card-hd"><h2>流量接入</h2>
-        <span class="hint">将浏览器 / 客户端代理指向下方端口，流量将自动进入检测流程；HTTPS 经本地证书解密（可选），全部数据仅保留本机。仅用于已获授权的目标</span>
-        <button class="btn btn-ghost cap-settings" id="cap-open2">捕获参数…</button></div>
       <div id="cap-err"></div>
       <div class="statcards" id="cap-stats"></div>
       <div class="split">
@@ -597,8 +635,8 @@ dialog.sheet-wide{width:min(1000px,94vw)}
       </div>
     </div>
 
-  <div class="sect">
-    <div class="sect-hd">矩阵扫描 <span class="hint">5 个领域 · 51 个参照实现，定向差分</span></div>
+  <details class="sect">
+    <summary class="sect-hd">矩阵扫描 <span class="hint">5 个领域 · 51 个参照实现，定向差分</span></summary>
   <section class="legacy" id="tab-scan">
     <div class="card">
       <div class="card-hd"><h2>扫描任务</h2>
@@ -691,10 +729,10 @@ dialog.sheet-wide{width:min(1000px,94vw)}
       </div>
     </div>
   </section>
-  </div>
+  </details>
 
-  <div class="sect">
-    <div class="sect-hd">外部发现验证 <span class="hint">以同一套判定引擎复核第三方扫描器的输出</span></div>
+  <details class="sect">
+    <summary class="sect-hd">外部发现验证 <span class="hint">以同一套判定引擎复核第三方扫描器的输出</span></summary>
   <section class="legacy" id="tab-verify">
     <div class="card">
       <div class="card-hd"><h2>验证外部发现</h2>
@@ -720,10 +758,10 @@ dialog.sheet-wide{width:min(1000px,94vw)}
     </div>
     <div id="vfy-result"></div>
   </section>
-  </div>
+  </details>
 
-  <div class="sect">
-    <div class="sect-hd">单文件检测 <span class="hint">对单份原始请求字节执行差分，可指定参与对照的实现对</span></div>
+  <details class="sect">
+    <summary class="sect-hd">单文件检测 <span class="hint">对单份原始请求字节执行差分，可指定参与对照的实现对</span></summary>
   <section class="legacy" id="tab-probe">
     <div class="card">
       <div class="card-hd"><h2>请求字节检测</h2><span class="hint">输入为原始请求字节（如抓包导出），全程黑盒分析；结论附带双侧观测与消融证据</span></div>
@@ -765,9 +803,7 @@ dialog.sheet-wide{width:min(1000px,94vw)}
 
     <div id="probe-result"></div>
   </section>
-  </div>
-
-  </section>
+  </details>
 
   <!-- ============ 设置：小窗（原生 dialog，控件沿用原 id，读写逻辑不动） ============ -->
   <dialog class="sheet sheet-wide" id="set-dlg">
@@ -849,8 +885,9 @@ dialog.sheet-wide{width:min(1000px,94vw)}
   </dialog>
 
   <!-- ============ 自检与参考：并入检测页（不再是独立标签页） ============ -->
-  <section id="tab-check">
-  <section class="legacy">
+  <details class="sect" id="tab-check">
+    <summary class="sect-hd">系统自检与案例库 <span class="hint">引擎有效性回归 · 47 条已知案例的判定依据</span></summary>
+    <section class="legacy">
     <div class="card">
       <div class="card-hd"><h2>系统自检</h2><span class="hint">引擎有效性回归：对已知案例库全量反验证，确保判定链路可用</span></div>
       <p class="lead">对已知案例库执行全量反验证：确认判定引擎当前版本可正确重现全部已知语义分歧。</p>
@@ -859,10 +896,8 @@ dialog.sheet-wide{width:min(1000px,94vw)}
       </div>
       <div id="checkresult" class="stack"></div>
     </div>
-  </section>
-  <div class="sect">
-    <div class="sect-hd">案例库 <span class="hint">47 条已知案例；选择条目查看双侧观测与判定依据</span></div>
-  <section class="legacy" id="tab-cases">
+    </section>
+    <section class="legacy" id="tab-cases">
     <div class="card">
       <div class="card-hd"><h2>已知案例库</h2><span class="hint">(<span id="casecount">0</span> 个)</span></div>
       <div class="split">
@@ -874,11 +909,10 @@ dialog.sheet-wide{width:min(1000px,94vw)}
         <div id="casedetail" class="note">← 请选择左侧案例</div>
       </div>
     </div>
-  </section>
-  </div>
-  </section>
-
-
+    </section>
+  </details>
+</div>
+</div>
 </main>
 
 <!-- ===== 捕获设置小窗：原生 dialog（ESC / 点背景自动关），元素沿用原 id，逻辑不动 ===== -->
@@ -1959,6 +1993,9 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
       showEvidence(findings[parseInt(node.dataset.i, 10)]);
     });
   }
+  window.__dtLoad = arr => {                // 工作区侧栏：切换回某次检测的发现集合
+    findings = arr; renderFindings();
+  };
   function showEvidence(f){
     if (!f) return;
     let h = `<div class="kv"><span class="k">对象</span>${esc(titleOf(f))}</div>`;
@@ -2010,6 +2047,7 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
       return;
     }
     el('dt-err').innerHTML = ''; lines = []; findings = []; lastReport = '';
+    if (window.sideAddDetect) window.sideAddDetect(findings);
     checkMangled();
     el('dt-report').textContent = ''; el('dt-list').innerHTML = '';
     el('dt-evidence').className = 'note'; el('dt-evidence').textContent = '← 请选择左侧条目';
@@ -2315,6 +2353,8 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
       v => String(v == null ? '' : v).toLowerCase()).join(' ').indexOf(query) >= 0;
   }
   function renderList(){
+    window.__capRows = rows;                 // 供工作区侧栏（检测历史）读取
+    if (window.__sideSync) window.__sideSync();
     const list = box('cap-list');
     const hits = rows.filter(matchesFilter);
     const view = hits.slice(-200);
@@ -2334,6 +2374,7 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
     box('cap-count').textContent =
       (hits.length === rows.length ? '' : hits.length + ' / ') + rows.length + ' 条'
       + (hits.length > view.length ? '（只显示最近 200 条；完整记录在 JSONL 里）' : '');
+    if (window.__sideSync) window.__sideSync();   // 侧栏（检测历史）跟着刷新
   }
   function evHtml(d){
     let h = `<div class="kv"><span class="k">请求</span>${esc(d.method)} ${esc(d.host)}${esc(d.path || '')}</div>`;
@@ -2373,6 +2414,7 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
     return h;
   }
   async function detail(caseId){
+    window.__capDetail = detail;            // 工作区侧栏点击时复用
     const ev = box('cap-evidence');
     if (!caseId){ ev.className = 'note'; ev.textContent = '这条是 HTTPS 隧道（未拆包），没有证据可看'; return; }
     ev.className = '';
@@ -2516,6 +2558,123 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
       }
     } catch(err){ /* 服务没起来时安静退出 */ }
   })();
+})();
+</script>
+<script>
+/* ===== 三栏工作区：模式切换 + 结果卡 tab + 检测历史侧栏 ===== */
+(function(){
+  const $id = id => document.getElementById(id);
+  let mode = 'manual';
+  let sideSel = null;                       // {kind:'cap'|'find', key}
+  const dtHistory = [];                     // {ts, title, arr} —— 每次手动检测的发现集合
+
+  /* ---- 模式切换：手动检测 / 流量接入 ---- */
+  function setMode(m){
+    mode = m;
+    document.querySelectorAll('#mode-tabs .tabbtn').forEach(b =>
+      b.classList.toggle('active', b.dataset.mode === m));
+    $id('mode-manual').hidden = m !== 'manual';
+    $id('mode-capture').hidden = m !== 'capture';
+  }
+  document.querySelectorAll('#mode-tabs .tabbtn').forEach(b =>
+    b.onclick = () => setMode(b.dataset.mode));
+
+  /* ---- 结果卡 tab：实时报告 / 发现 ---- */
+  function showResultTab(name){
+    document.querySelectorAll('#res-tabs .tabbtn').forEach(b =>
+      b.classList.toggle('active', b.dataset.panel === name));
+    $id('panel-report').hidden = name !== 'panel-report';
+    $id('panel-findings').hidden = name !== 'panel-findings';
+    if ($id('res-acts-report')) $id('res-acts-report').hidden = name !== 'panel-report';
+    if ($id('res-acts-findings')) $id('res-acts-findings').hidden = name !== 'panel-findings';
+  }
+  document.querySelectorAll('#res-tabs .tabbtn').forEach(b =>
+    b.onclick = () => showResultTab(b.dataset.panel));
+
+  /* ---- 检测历史侧栏 ---- */
+  function dayLabel(ts){
+    const d = new Date(ts), now = new Date();
+    const day0 = x => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+    const diff = Math.round((day0(now) - day0(d)) / 86400000);
+    if (diff <= 0) return '今天';
+    if (diff === 1) return '昨天';
+    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0')
+         + '-' + String(d.getDate()).padStart(2, '0');
+  }
+  function capBadge(r){
+    const a = r.analysis;
+    if (r.tunnel) return '<span class="badge">隧道</span>';
+    if (!a) return '';
+    if (a.security) return '<span class="badge security">' + a.security + '</span>';
+    if (a.divergences) return '<span class="badge unknown">' + a.divergences + '</span>';
+    return '<span class="badge compatibility">一致</span>';
+  }
+  function sideRender(){
+    const list = $id('side-list');
+    if (!list) return;
+    const items = [];
+    (window.__capRows || []).forEach((r, i) => {
+      if (r.tunnel) return;                 // 隧道（未拆包）不进历史
+      items.push({kind: 'cap', i, ts: r.ts ? new Date(r.ts) : new Date(0),
+        title: (r.method || '') + ' ' + (r.host || '') + (r.path || ''),
+        badge: capBadge(r), key: r.case_id || ('cap' + i)});
+    });
+    dtHistory.forEach((e, i) => items.push({kind: 'find', i, ts: e.ts,
+      title: e.title, badge: '', key: 'find' + i}));
+    items.sort((a, b) => b.ts - a.ts);
+    $id('side-count').textContent = items.length ? items.length + ' 条' : '';
+    if (!items.length){
+      list.innerHTML = '<div class="side-empty">暂无记录；这里会按日期归档本次会话内的手动检测与流量接入</div>';
+      return;
+    }
+    let html = '', lastDay = '';
+    const selKey = sideSel ? sideSel.kind + ':' + sideSel.key : '';
+    items.forEach(it => {
+      const d = dayLabel(it.ts);
+      if (d !== lastDay){ html += '<div class="side-day">' + d + '</div>'; lastDay = d; }
+      const sel = selKey === it.kind + ':' + it.key ? ' sel' : '';
+      html += '<div class="side-item' + sel + '" data-kind="' + it.kind
+            + '" data-i="' + it.i + '" data-key="' + it.key + '">'
+            + '<span class="t" title="' + it.title.replace(/"/g, '&quot;') + '">'
+            + esc(it.title) + '</span>' + it.badge + '</div>';
+    });
+    list.innerHTML = html;
+    list.querySelectorAll('.side-item').forEach(el => el.onclick = () => {
+      const kind = el.dataset.kind, i = parseInt(el.dataset.i, 10);
+      sideSel = {kind, key: el.dataset.key};
+      if (kind === 'cap'){
+        const r = (window.__capRows || [])[i];
+        setMode('capture');
+        if (r && r.case_id){
+          selCap(r); sideRender();
+          if (window.__capDetail) window.__capDetail(r.case_id);
+        }
+      } else {
+        const e = dtHistory[i];
+        setMode('manual');
+        if (window.__dtLoad) window.__dtLoad(e.arr);
+        showResultTab('panel-findings');
+        sideRender();
+      }
+    });
+  }
+  function selCap(r){
+    const rows = window.__capRows || [];
+    const list = $id('cap-list');
+    if (list) list.querySelectorAll('.evitem').forEach(x =>
+      x.classList.toggle('sel', x.dataset.case === (r.case_id || '')));
+  }
+
+  /* 由捕获 / 检测两个模块回调 */
+  window.sideAddDetect = arr => {
+    const sel = $id('dt-domain');
+    const name = sel && sel.selectedIndex >= 0
+      ? sel.options[sel.selectedIndex].textContent : '';
+    dtHistory.push({ts: new Date(), title: '手动检测 · ' + (name || '全部领域'), arr});
+    sideRender();
+  };
+  window.__sideSync = () => sideRender();   // 捕获轮询里每轮调一次
+  sideRender();
 })();
 </script>
 </body>
