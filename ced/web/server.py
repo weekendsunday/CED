@@ -232,8 +232,13 @@ class Handler(BaseHTTPRequestHandler):
         query = parse_qs(url.query)
 
         if url.path in ("/", "/index.html"):
-            return self._send((STATIC / "index.html").read_bytes(),
-                              "text/html; charset=utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            # 前端单页迭代频繁：绝不缓存，否则升级后浏览器还端着旧页面
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write((STATIC / "index.html").read_bytes())
+            return
         if url.path == "/api/health":
             return self._json({"ok": True})
         if url.path == "/api/impls":
