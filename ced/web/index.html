@@ -504,6 +504,8 @@ html{scrollbar-gutter:stable}          /* 滚动条出现/消失不再引起整�
 .modetabs{display:flex;gap:8px;margin-bottom:var(--s3)}
 .tabbtn{border:1px solid var(--line);background:var(--surface);color:var(--ink-2);padding:6px 16px;border-radius:999px;cursor:pointer;font-size:var(--fs-2)}
 .tabbtn.active{background:var(--accent);border-color:var(--accent);color:#fff}
+.tab-div{width:1px;height:22px;background:var(--line);margin:0 6px;align-self:center}
+.tabbtn.alt{color:var(--ink-2);padding:6px 12px;font-size:var(--fs-1)}
 details.sect{margin-top:var(--s4);min-width:0}
 details.sect>summary{list-style:none;cursor:pointer}
 details.sect>summary::-webkit-details-marker{display:none}
@@ -550,6 +552,11 @@ details.sect[open]>summary{border-bottom:1px solid var(--line)}
 <div class="modetabs" id="mode-tabs">
   <button type="button" class="tabbtn active" data-mode="manual">手动检测</button>
   <button type="button" class="tabbtn" data-mode="capture">流量接入</button>
+  <span class="tab-div"></span>
+  <button type="button" class="tabbtn alt" data-mode="scan">矩阵扫描</button>
+  <button type="button" class="tabbtn alt" data-mode="verify">外部验证</button>
+  <button type="button" class="tabbtn alt" data-mode="probe">单文件检测</button>
+  <button type="button" class="tabbtn alt" data-mode="check">自检与案例库</button>
 </div>
 <div id="mode-manual">
   <!-- ============ 检测：唯一入口 ============ -->
@@ -648,8 +655,8 @@ details.sect[open]>summary{border-bottom:1px solid var(--line)}
     </div>
 </div>
 
-  <details class="sect">
-    <summary class="sect-hd">矩阵扫描 <span class="hint">5 个领域 · 51 个参照实现，定向差分</span></summary>
+  <div class="sect" id="panel-scan" hidden>
+    <div class="sect-hd">矩阵扫描 <span class="hint">5 个领域 · 51 个参照实现，定向差分</span></div>
   <section class="legacy" id="tab-scan">
     <div class="card">
       <div class="card-hd"><h2>扫描任务</h2>
@@ -742,10 +749,10 @@ details.sect[open]>summary{border-bottom:1px solid var(--line)}
       </div>
     </div>
   </section>
-  </details>
+  </div>
 
-  <details class="sect">
-    <summary class="sect-hd">外部发现验证 <span class="hint">以同一套判定引擎复核第三方扫描器的输出</span></summary>
+  <div class="sect" id="panel-verify" hidden>
+    <div class="sect-hd">外部发现验证 <span class="hint">以同一套判定引擎复核第三方扫描器的输出</span></div>
   <section class="legacy" id="tab-verify">
     <div class="card">
       <div class="card-hd"><h2>验证外部发现</h2>
@@ -771,10 +778,10 @@ details.sect[open]>summary{border-bottom:1px solid var(--line)}
     </div>
     <div id="vfy-result"></div>
   </section>
-  </details>
+  </div>
 
-  <details class="sect">
-    <summary class="sect-hd">单文件检测 <span class="hint">对单份原始请求字节执行差分，可指定参与对照的实现对</span></summary>
+  <div class="sect" id="panel-probe" hidden>
+    <div class="sect-hd">单文件检测 <span class="hint">对单份原始请求字节执行差分，可指定参与对照的实现对</span></div>
   <section class="legacy" id="tab-probe">
     <div class="card">
       <div class="card-hd"><h2>请求字节检测</h2><span class="hint">输入为原始请求字节（如抓包导出），全程黑盒分析；结论附带双侧观测与消融证据</span></div>
@@ -816,7 +823,7 @@ details.sect[open]>summary{border-bottom:1px solid var(--line)}
 
     <div id="probe-result"></div>
   </section>
-  </details>
+  </div>
 
   <!-- ============ 设置：小窗（原生 dialog，控件沿用原 id，读写逻辑不动） ============ -->
   <dialog class="sheet sheet-wide" id="set-dlg">
@@ -898,8 +905,8 @@ details.sect[open]>summary{border-bottom:1px solid var(--line)}
   </dialog>
 
   <!-- ============ 自检与参考：并入检测页（不再是独立标签页） ============ -->
-  <details class="sect" id="tab-check">
-    <summary class="sect-hd">系统自检与案例库 <span class="hint">引擎有效性回归 · 47 条已知案例的判定依据</span></summary>
+  <div class="sect" id="panel-check" hidden>
+    <div class="sect-hd">系统自检与案例库 <span class="hint">引擎有效性回归 · 47 条已知案例的判定依据</span></div>
     <section class="legacy">
     <div class="card">
       <div class="card-hd"><h2>系统自检</h2><span class="hint">引擎有效性回归：对已知案例库全量反验证，确保判定链路可用</span></div>
@@ -923,7 +930,7 @@ details.sect[open]>summary{border-bottom:1px solid var(--line)}
       </div>
     </div>
     </section>
-  </details>
+  </div>
 </div>
 </div>
 </main>
@@ -2581,17 +2588,23 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
   let sideSel = null;                       // {kind:'cap'|'find', key}
   const dtHistory = [];                     // {ts, title, arr} —— 每次手动检测的发现集合
 
-  /* ---- 模式切换：手动检测 / 流量接入（状态写入 hash，可深链、可回退）---- */
+  /* ---- 模式切换：六个面板互斥显示（状态写入 hash，可深链、可回退）---- */
+  const MODE_PANELS = {
+    manual: 'mode-manual', capture: 'mode-capture',
+    scan: 'panel-scan', verify: 'panel-verify',
+    probe: 'panel-probe', check: 'panel-check'
+  };
   function setMode(m){
     mode = m;
     document.querySelectorAll('#mode-tabs .tabbtn').forEach(b =>
       b.classList.toggle('active', b.dataset.mode === m));
-    $id('mode-manual').hidden = m !== 'manual';
-    $id('mode-capture').hidden = m !== 'capture';
-    // 结果卡是手动检测的产出；接入模式下隐藏，避免"尚未开始检测"挂在流量面板上方
+    Object.entries(MODE_PANELS).forEach(([k, id]) => {
+      const el = $id(id); if (el) el.hidden = k !== m;
+    });
+    // 结果卡是手动检测的产出；其余模式下隐藏，避免无关产出挂在面板上方
     const resCard = $id('panel-report').closest('.card');
     if (resCard) resCard.hidden = m !== 'manual';
-    history.replaceState(null, '', m === 'capture' ? '#capture' : '#manual');
+    history.replaceState(null, '', '#' + m);
   }
   document.querySelectorAll('#mode-tabs .tabbtn').forEach(b =>
     b.onclick = () => setMode(b.dataset.mode));
@@ -2692,7 +2705,8 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
   };
   window.__sideSync = () => sideRender();   // 捕获轮询里每轮调一次
   sideRender();
-  if (location.hash === '#capture') setMode('capture');   // 深链：/#capture 直接进接入模式
+  const hashMode = location.hash.slice(1);
+  if (MODE_PANELS[hashMode]) setMode(hashMode);          // 深链：/#scan 等直接进对应面板
 })();
 </script>
 </body>
