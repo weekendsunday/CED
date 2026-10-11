@@ -189,7 +189,7 @@ def render_markdown(result, *, domain: str = "http1-framing",
 
 
 def result_payload(result) -> dict:
-    """一次扫描的可序列化结果 —— 报告、网页控制台、台账都消费这一份形状。"""
+    """一次扫描的可序列化结果 —— 报告与网页控制台共用这一份形状。"""
     keys = tuple(getattr(result, "compare_keys", ()) or ())
     findings: list[dict] = []
     for f in result.findings:

@@ -5,8 +5,8 @@
 
 from .job import (ABORTED, DONE, FAILED, FINAL, PENDING, RUNNING, JobAborted,
                   JobRegistry, ScanJob)
-from .runner import db_path, prepare_proposals, run_job, start
+from .runner import db_path, run_job, start
 
 __all__ = ["ABORTED", "DONE", "FAILED", "FINAL", "PENDING", "RUNNING",
-           "JobAborted", "JobRegistry", "ScanJob", "db_path",
-           "prepare_proposals", "run_job", "start"]
+           "JobAborted", "JobRegistry", "ScanJob", "db_path", "run_job",
+           "start"]

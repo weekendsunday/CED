@@ -37,13 +37,12 @@ class ScanJob:
 
     def __init__(self, job_id: str, *, domain: str = "http1-framing",
                  mode: str = "axis", limit: int | None = None, seed: int = 42,
-                 use_llm: bool = False, topology: str = "") -> None:
+                 topology: str = "") -> None:
         self.job_id = job_id
         self.domain = domain
         self.mode = mode
         self.limit = limit
         self.seed = seed
-        self.use_llm = use_llm
         self.topology = topology
 
         self.state = PENDING
@@ -60,7 +59,6 @@ class ScanJob:
         self.total_cases = 0
         self.n_divergence = 0
         self.n_security = 0
-        self.n_proposal = 0
 
         #: 事件流（供 SSE 从任意游标重放）。上限见 _MAX_EVENTS。
         self.events: list[dict] = []
@@ -124,18 +122,16 @@ class ScanJob:
         """与 ``store.scan_job`` 表列名一致的扁平行。"""
         return {
             "job_id": self.job_id, "domain": self.domain, "mode": self.mode,
-            "limit_n": self.limit, "seed": self.seed, "use_llm": int(self.use_llm),
+            "limit_n": self.limit, "seed": self.seed,
             "state": self.state, "created": self.created, "started": self.started,
             "finished": self.finished, "total_cases": self.total_cases,
             "total_jobs": self.total_jobs, "n_divergence": self.n_divergence,
-            "n_security": self.n_security, "n_proposal": self.n_proposal,
-            "error": self.error,
+            "n_security": self.n_security, "error": self.error,
         }
 
     def brief(self) -> dict:
         """给前端的任务摘要。``live`` 表示结果还在内存里、可以点开。"""
         data = self.row()
-        data["use_llm"] = bool(self.use_llm)
         data["live"] = True
         data["stage"] = self.stage
         data["stage_detail"] = self.stage_detail

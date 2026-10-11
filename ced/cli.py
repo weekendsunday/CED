@@ -29,11 +29,6 @@ def _print_event(event: dict) -> None:
     kind = event.get("type")
     if kind == "stage":
         print(f"[{event.get('stage', '')}] {event.get('detail', '')}")
-    elif kind == "proposals":
-        print(f"[提案] {event.get('detail', '')}")
-        for item in event.get("items", []):
-            mark = "命中" if item.get("admitted") else "未命中"
-            print(f"    [{mark}] {item.get('axis', ''):<34}{item.get('note', '')[:70]}")
     elif kind == "progress":
         print(f"[进度] {event.get('done')}/{event.get('total')}　"
               f"分歧 {event.get('divergences')}　安全级 {event.get('security')}")
@@ -51,24 +46,9 @@ def _cmd_scan(args: argparse.Namespace) -> int:
         topo_mode = "axis"
     evaluator = Evaluator(topo.impls)
 
-    from .scan import runner as scan_runner
-
-    # 固化语料不依赖模型（见 python -m ced adopt）：它与内置手写轴同属基线，
-    # 不带 --llm 也带上；每一条照样重跑准入实验，通不过的就地丢弃。
-    extra: list[tuple[str, bytes]] = scan_runner.prepare_adopted(
-        _print_event, adapter, evaluator)
-    if args.llm:
-        conn = store.connect(scan_runner.db_path())
-        try:
-            extra += scan_runner.prepare_proposals(_print_event, adapter,
-                                                   evaluator, conn)
-        finally:
-            conn.close()
-
     try:
         result = scan(adapter, evaluator, mode=topo_mode, limit=args.limit,
-                      seed=args.seed, do_minimize=not args.no_minimize,
-                      extra_cases=extra)
+                      seed=args.seed, do_minimize=not args.no_minimize)
     except ProbeUnreachable as exc:
         # 链路探测失败绝不产出"发现" —— 那会是一整片假阳性
         raise SystemExit(f"[!] 链路不可用，已中止（不产出任何结论）：{exc}") from exc
@@ -369,235 +349,6 @@ def _cmd_poc(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_agent(args: argparse.Namespace) -> int:
-    """闭环 agent：让模型看着上一轮的执行结果决定下一步往哪里搜。
-
-    模型只选工具、不判定；每条发现仍由确定性内核给出。
-    没配置模型时降级为单轮确定性扫描，结果与不带 agent 完全一致。
-    """
-    from .agent import ToolBox
-    from .agent import run as agent_run
-    from .assist.client import LlmClient, config_from_env
-    from .scan import runner as scan_runner
-    from .scenario import build_pocs, write_pocs
-
-    adapter = get_adapter(args.domain)
-    topo = load(args.topology) if args.topology else demo(args.domain)
-    evaluator = Evaluator(topo.impls)
-
-    client = LlmClient(config_from_env())
-    conn = store.connect(args.db or scan_runner.db_path())
-    # 固化语料先入池：它是内置基线的一部分，agent 每一轮的 scan_corpus 都会带上
-    seeded = scan_runner.prepare_adopted(_print_event, adapter, evaluator, conn)
-    toolbox = ToolBox(adapter, evaluator, conn=conn, client=client,
-                      mode=args.mode, limit=args.limit, seed=args.seed,
-                      max_calls=args.max_calls, proposals=list(seeded))
-
-    print("=" * 66)
-    print(f"闭环 agent　目标：{args.goal}")
-    print(f"模型：{'已配置 ' + config_from_env().model if client.available else '未配置（降级为单轮确定性扫描）'}"
-          f"　预算：{args.rounds} 轮 / {args.max_calls} 次工具调用")
-    print("=" * 66)
-
-    def emit(event: dict) -> None:
-        if event.get("type") == "agent":
-            mark = "ok" if event.get("ok") else "FAILED"
-            note = (event.get("note") or "").replace("\n", " ")[:100]
-            print(f"[第 {event.get('round')} 轮] {event.get('tool'):<16}{mark:<8}{note}",
-                  flush=True)
-
-    try:
-        outcome = agent_run(goal=args.goal, toolbox=toolbox, client=client,
-                            max_rounds=args.rounds, on_event=emit)
-    finally:
-        conn.close()
-
-    print("-" * 66)
-    print("运行轨迹：")
-    for step in outcome.steps:
-        mark = "ok" if step.ok else "FAILED"
-        print(f"  {step.round}. {step.tool:<16}{mark:<8}{(step.why or '')[:70]}")
-    if outcome.error:
-        print(f"  [!] {outcome.error}")
-
-    merged = outcome.merged()
-    print("-" * 66)
-    print(f"[结果] 累计用例 {merged.total_cases} | 耦合误差 {len(merged.divergences)} | "
-          f"安全级 {len(merged.security)}")
-    for finding in merged.security:
-        print(f"  [!!] {finding.case_id}  {finding.divergence.left.impl_id} ↔ "
-              f"{finding.divergence.right.impl_id}  {finding.verdict.kind}")
-    print(f"[结论] {outcome.summary}")
-
-    report = render_markdown(merged, domain=topo.domain, topo_desc=topo.describe(),
-                             poc_dir=args.poc_dir)
-    artifacts.write_text(args.out, report)
-    print(f"[产物] {args.out}")
-
-    pocs = build_pocs(merged)
-    if pocs:
-        paths = write_pocs(merged, args.poc_dir)
-        print(f"[产物] {args.poc_dir}  （{len(paths)} 个端到端 PoC 脚本）")
-
-    if args.json:
-        artifacts.write_text(args.json, render_json(merged))
-        print(f"[产物] {args.json}")
-    return 0
-
-
-def _cmd_assist(args: argparse.Namespace) -> int:
-    """模型提案的独立入口：配置状态 / 生成一批并跑准入实验 / 看命中率台账。
-
-    与扫描完全解耦 —— 没有模型时这条命令只是告诉你"没配"，不影响任何扫描路径。
-    """
-    from .adapters.base import axis_names
-    from .assist import compile as acompile
-    from .assist import ledger as aledger
-    from .assist import propose as apropose
-    from .assist.client import LlmClient, config_from_env
-    from .scan import runner as scan_runner
-
-    cfg = config_from_env()
-    client = LlmClient(cfg)
-    conn = store.connect(scan_runner.db_path())
-    try:
-        want_action = bool(args.propose or args.ledger)
-        if args.status or not want_action:
-            print(f"模型状态    {'已配置' if client.available else '未配置'}")
-            print(f"base_url    {cfg.base_url or '—'}")
-            print(f"model       {cfg.model or '—'}")
-            print(f"台账库      {scan_runner.db_path()}")
-            if not client.available:
-                print("\n说明        扫描不依赖模型 —— 未配置时全链路自动降级为纯确定性模式。")
-                print("           配置 CED_LLM_BASE_URL / CED_LLM_MODEL / CED_LLM_API_KEY 即可启用。")
-            if not want_action:
-                print("\n用法        python -m ced assist --propose 8   要 8 条提案并逐条跑准入实验")
-                print("            python -m ced assist --ledger     看提案命中率台账")
-                return 0
-
-        if args.propose:
-            if not client.available:
-                raise SystemExit("[!] 未配置模型，无法提案。用 python -m ced assist 查看状态。")
-            adapter = get_adapter(args.domain)
-            evaluator = Evaluator(demo(args.domain).impls)
-            proposals, rejected, _raw = apropose.propose(
-                client, adapter_name=adapter.name, n=args.propose,
-                existing_axes=axis_names(adapter),
-                history=store.proposal_history_brief(conn))
-            for item in rejected:
-                aledger.record_rejected(conn, item)
-            admissions = acompile.admit(proposals, adapter, evaluator)
-            aledger.record_many(conn, admissions)
-
-            hits = sum(1 for a in admissions if a.admitted)
-            print(f"模型返回    {len(proposals) + len(rejected)} 条　"
-                  f"通过语法门槛 {len(proposals)} 条　被丢弃 {len(rejected)} 条")
-            print(f"准入实验    {hits}/{len(admissions)} 条真的逼出了结构分歧\n")
-            for a in admissions:
-                print(f"  [{'命中' if a.admitted else '未命中'}] "
-                      f"{a.proposal.axis:<32}{a.proposal.proposal_id}")
-                print(f"           {a.detail}")
-            for r in rejected:
-                print(f"  [丢弃] {r.axis or '(无名)':<32}{r.reason}：{r.detail[:80]}")
-
-        if args.ledger:
-            stats = store.proposal_stats(conn)
-            print(f"提案 {stats['proposed']}　可编译 {stats['compiled']}　"
-                  f"命中 {stats['admitted']}　命中率 {stats['hit_rate']:.1%}")
-            for origin, s in sorted(stats["by_origin"].items()):
-                label = {"llm": "模型", "handwritten": "手写"}.get(origin, origin)
-                print(f"  {label:<6}提案 {s['proposed']}　命中 {s['admitted']}　"
-                      f"命中率 {s['hit_rate']:.1%}")
-            print("\n最近提案：")
-            for row in store.recent_proposals(conn, 20):
-                mark = "命中" if row["admitted"] else (
-                    "未命中" if row["compiled"] else "丢弃")
-                print(f"  [{mark:<3}] {row['axis']:<34}{row['origin']:<12}"
-                      f"{row['note'][:56]}")
-            print("\n口径：命中 = 提案通过了差分 oracle 的准入实验（真的逼出结构分歧），"
-                  "不是模型自述。")
-        return 0
-    finally:
-        conn.close()
-
-
-def _cmd_adopt(args: argparse.Namespace) -> int:
-    """固化语料：把审过的模型提案写进仓库，扫描时直接用，不再调模型。
-
-    只认**命中过**的提案（台账里 ``admitted=1`` 的 ``llm`` 条目）—— 采纳的前提是
-    它真的逼出过结构分歧，不是模型自己说得好。写进
-    ``ced/cases/adopted/<domain>.json`` 后仍然要自己 review 再提交：
-    这一步只是写文件，代码不替你做主，因为写进去就等于把它当内置语料了。
-    """
-    from . import adopted
-    from .scan import runner as scan_runner
-
-    domain = args.domain
-    path = adopted.path_of(domain)
-
-    if args.drop:
-        gone, absent = adopted.drop(domain, args.drop)
-        for axis in gone:
-            print(f"[撤下] {axis}")
-        for axis in absent:
-            print(f"[跳过] {axis}　（固化语料里本来就没有）")
-        if not gone:
-            return 1
-        print(f"\n[产物] {path}　剩 {len(adopted.load(domain))} 条")
-        return 0
-
-    if args.add:
-        conn = store.connect(args.db or scan_runner.db_path())
-        try:
-            added, existing, missing = adopted.adopt(conn, domain, args.add)
-        finally:
-            conn.close()
-        for axis in added:
-            print(f"[采纳] {axis}")
-        for axis in existing:
-            print(f"[跳过] {axis}　（已经在固化语料里）")
-        for axis in missing:
-            print(f"[拒绝] {axis}　（台账里没有它的命中记录 —— "
-                  f"只采纳真的逼出过分歧的）")
-        if not added:
-            return 1 if missing else 0
-        print(f"\n[产物] {path}　共 {len(adopted.load(domain))} 条")
-        print("       review 一下再提交 —— 写进去就等于把它当内置语料了；"
-              "本次扫描起就会自动带上，且不再需要模型。")
-        return 0
-
-    # 没给动作 = 看现状：固化语料 + 台账里还够格采纳的候选
-    planted = adopted.listing(domain)
-    print(f"领域        {domain}")
-    print(f"固化语料    {path}")
-    print(f"             {len(planted)} 条"
-          + ("" if path.exists() else "　（文件还不存在，采纳第一条时会建）"))
-    for row in planted:
-        print(f"  [已固化] {row['axis']:<34}{row['bytes']:>4}B　"
-              f"{row['model'] or '—':<16}{row['adopted_at']}")
-        print(f"           命中字段 {', '.join(row['hit_fields']) or '—'}"
-              f"　{row['rationale'][:60]}")
-
-    conn = store.connect(args.db or scan_runner.db_path())
-    try:
-        rows = adopted.candidates(conn)
-    finally:
-        conn.close()
-    print()
-    print(f"台账里够格采纳的    {len(rows)} 条（模型提的、且逼出过分歧）")
-    for row in rows:
-        print(f"  [候选]   {row['axis']:<34}{len(row['payload']):>4}B　"
-              f"{row['model'] or '—':<16}{row['proposal_id']}")
-    if not rows:
-        print("           还没有 —— 先在网页上「让模型提一批新提案」，"
-              "或 python -m ced assist --propose 8")
-    print("\n用法        python -m ced adopt --add <轴名>   采纳（可重复 --add）")
-    print("            python -m ced adopt --drop <轴名>  撤下")
-    print("            台账没有领域列：跨领域的条目会在准入实验里被当前领域的"
-          "对照自然筛掉，不必在这里拦。")
-    return 0
-
-
 def _cmd_web(args: argparse.Namespace) -> int:
     from .web.server import main as web_main
     argv = ["--port", str(args.port), "--host", args.host]
@@ -808,9 +559,6 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--limit", type=int, default=None, help="用例数上限")
     s.add_argument("--seed", type=int, default=42, help="随机种子（可复现）")
     s.add_argument("--no-minimize", action="store_true", help="跳过最小化")
-    s.add_argument("--llm", action="store_true",
-                   help="让模型提案（需配置 CED_LLM_*）；提案必须先通过差分 oracle "
-                        "的准入实验才进语料，通不过的直接丢弃")
     s.add_argument("--out", default="report.md")
     s.add_argument("--poc-dir", default="results/pocs",
                    help="端到端 PoC 脚本输出目录（只对 security 级发现生成）")
@@ -896,21 +644,6 @@ def build_parser() -> argparse.ArgumentParser:
     vf.add_argument("--json", default=None, help="把验证结果写成 JSON")
     vf.set_defaults(func=_cmd_verify)
 
-    pc = sub.add_parser("agent", help="闭环 agent：模型看着执行结果决定下一步往哪搜（判定仍在内核）")
-    pc.add_argument("--goal", default="在内置语料之外，找出新的可升级耦合误差",
-                    help="给 agent 的总目标（自然语言）")
-    pc.add_argument("--rounds", type=int, default=4, help="最多几轮（每轮一次工具调用）")
-    pc.add_argument("--max-calls", type=int, default=12, help="工具调用总预算（硬上限）")
-    pc.add_argument("--mode", choices=["axis", "cross"], default="axis")
-    pc.add_argument("--limit", type=int, default=60)
-    pc.add_argument("--seed", type=int, default=42)
-    pc.add_argument("--topology", default=None, help="拓扑文件；缺省用内置 demo")
-    pc.add_argument("--domain", default="http1-framing", choices=sorted(ADAPTERS))
-    pc.add_argument("--out", default="results/agent-report.md")
-    pc.add_argument("--poc-dir", default="results/pocs")
-    pc.add_argument("--json", default=None)
-    pc.add_argument("--db", default=None, help="台账库（默认 ced.db，用于命中率回写）")
-    pc.set_defaults(func=_cmd_agent)
 
     pc = sub.add_parser("poc", help="摊开一条 security 级发现的端到端 PoC（场景 + 字节归属 + 复现脚本）")
     pc.add_argument("case_id", help="用例 id，见 python -m ced scan 的输出")
@@ -925,25 +658,6 @@ def build_parser() -> argparse.ArgumentParser:
     pc.add_argument("--no-minimize", action="store_true")
     pc.set_defaults(func=_cmd_poc)
 
-    a = sub.add_parser("assist", help="模型提案：配置状态 / 生成一批并跑准入实验 / 命中率台账")
-    a.add_argument("--status", action="store_true", help="显示模型配置状态")
-    a.add_argument("--propose", type=int, metavar="N",
-                   help="向模型要 N 条提案，逐条跑差分 oracle 准入实验")
-    a.add_argument("--ledger", action="store_true", help="查看提案命中率台账")
-    a.add_argument("--domain", default="http1-framing", choices=sorted(ADAPTERS),
-                   help="按哪个领域向模型要提案")
-    a.set_defaults(func=_cmd_assist)
-
-    ad = sub.add_parser(
-        "adopt", help="固化语料：把审过的模型提案写进仓库，以后扫描直接用、不再调模型")
-    ad.add_argument("--domain", default="http1-framing", choices=sorted(ADAPTERS),
-                    help="按哪个领域固化（文件名 = 领域名.json）")
-    ad.add_argument("--add", action="append", metavar="AXIS", default=None,
-                    help="采纳这条轴（可重复）；只接受台账里命中过的")
-    ad.add_argument("--drop", action="append", metavar="AXIS", default=None,
-                    help="从固化语料里撤下这条轴（可重复）")
-    ad.add_argument("--db", default=None, help="台账库（默认 ced.db）")
-    ad.set_defaults(func=_cmd_adopt)
     return ap
 
 

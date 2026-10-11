@@ -46,20 +46,6 @@ CREATE TABLE IF NOT EXISTS finding (
     minimized     BLOB,
     chain_evidence TEXT
 );
--- 提案台账：手写轴与模型提案都记，用来算**命中率**（创新点④的度量底座）
-CREATE TABLE IF NOT EXISTS proposal (
-    proposal_id TEXT PRIMARY KEY,
-    axis        TEXT NOT NULL,
-    origin      TEXT NOT NULL,          -- handwritten | llm
-    model       TEXT,
-    rationale   TEXT,
-    payload     BLOB NOT NULL,
-    compiled    INTEGER NOT NULL DEFAULT 0,   -- 通过语法/白名单门槛
-    admitted    INTEGER NOT NULL DEFAULT 0,   -- 通过差分 oracle 准入实验（真的产生了分歧）
-    hit_fields  TEXT,                          -- JSON: 准入实验命中的结构字段
-    note        TEXT,
-    ts          REAL
-);
 -- 攻击场景 PoC：只对 security 级发现生成（判定器没升级的，这里不许替它升级）
 CREATE TABLE IF NOT EXISTS poc (
     poc_id        INTEGER PRIMARY KEY,
@@ -88,14 +74,12 @@ CREATE TABLE IF NOT EXISTS scan_job (
     mode         TEXT NOT NULL,
     limit_n      INTEGER,
     seed         INTEGER,
-    use_llm      INTEGER NOT NULL DEFAULT 0,
     state        TEXT NOT NULL,               -- pending|running|done|failed|aborted
     created      REAL, started REAL, finished REAL,
     total_cases  INTEGER NOT NULL DEFAULT 0,
     total_jobs   INTEGER NOT NULL DEFAULT 0,
     n_divergence INTEGER NOT NULL DEFAULT 0,
     n_security   INTEGER NOT NULL DEFAULT 0,
-    n_proposal   INTEGER NOT NULL DEFAULT 0,
     error        TEXT
 );
 """
@@ -191,104 +175,6 @@ def dump_finding(conn: sqlite3.Connection, case_id: str) -> dict | None:
             "chain_evidence": row[7]}
 
 
-# --------------------------------------------------------------------- 提案台账
-
-#: 命中 = 提案通过了差分 oracle 的准入实验（真的逼出了结构分歧）。
-#: 这是唯一一种"LLM 输出有用"的判据 —— 由确定性内核给出，不由模型自述。
-
-
-def save_proposal(conn: sqlite3.Connection, proposal, *, compiled: bool,
-                  admitted: bool, fields=(), note: str = "") -> None:
-    """记一条提案的台账。幂等：重复记同一条只会把标志位往上抬，不会丢历史。"""
-    fields_json = json.dumps(list(fields), ensure_ascii=False)
-    conn.execute(
-        "INSERT OR IGNORE INTO proposal (proposal_id, axis, origin, model, rationale,"
-        " payload, compiled, admitted, hit_fields, note, ts)"
-        " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-        (proposal.proposal_id, proposal.axis, proposal.origin, proposal.model,
-         proposal.rationale, sqlite3.Binary(proposal.payload),
-         int(compiled), int(admitted), fields_json, note, time.time()))
-    conn.execute(
-        "UPDATE proposal SET compiled = MAX(compiled, ?), admitted = MAX(admitted, ?),"
-        " hit_fields = CASE WHEN ? = 1 THEN ? ELSE hit_fields END, note = ?,"
-        " model = COALESCE(NULLIF(model, ''), ?),"
-        " rationale = COALESCE(NULLIF(rationale, ''), ?)"
-        " WHERE proposal_id = ?",
-        (int(compiled), int(admitted), int(admitted), fields_json, note,
-         proposal.model, proposal.rationale, proposal.proposal_id))
-    conn.commit()
-
-
-def proposal_stats(conn: sqlite3.Connection) -> dict:
-    total, compiled, admitted = conn.execute(
-        "SELECT COUNT(*), COALESCE(SUM(compiled), 0), COALESCE(SUM(admitted), 0)"
-        " FROM proposal").fetchone()
-    by_origin: dict[str, dict] = {}
-    for origin, n, adm in conn.execute(
-            "SELECT origin, COUNT(*), COALESCE(SUM(admitted), 0)"
-            " FROM proposal GROUP BY origin"):
-        by_origin[origin or "?"] = {
-            "proposed": n, "admitted": adm,
-            "hit_rate": round(adm / n, 4) if n else 0.0}
-    return {"proposed": total, "compiled": compiled, "admitted": admitted,
-            "hit_rate": round(admitted / total, 4) if total else 0.0,
-            "by_origin": by_origin}
-
-
-def recent_proposals(conn: sqlite3.Connection, limit: int = 50) -> list[dict]:
-    rows = conn.execute(
-        "SELECT proposal_id, axis, origin, model, rationale, payload, compiled,"
-        " admitted, hit_fields, note, ts FROM proposal"
-        " ORDER BY ts DESC LIMIT ?", (limit,)).fetchall()
-    return [{
-        "proposal_id": r[0], "axis": r[1], "origin": r[2], "model": r[3] or "",
-        "rationale": r[4] or "", "payload_b64": base64.b64encode(r[5]).decode(),
-        "payload_repr": repr(r[5])[:600], "compiled": bool(r[6]),
-        "admitted": bool(r[7]), "fields": json.loads(r[8] or "[]"),
-        "note": r[9] or "", "ts": r[10],
-    } for r in rows]
-
-
-#: SQLite 的变量上限是 999，分批查留点余量
-_IN_CHUNK = 400
-
-
-def proposal_clues(conn: sqlite3.Connection, case_ids) -> dict[str, dict]:
-    """按 case_id 取**模型**提案的线索：它当初猜的是什么、过了准入没有。
-
-    发现与提案天然对得上 —— ``pipeline.case_id_of`` 与 ``Proposal.proposal_id``
-    是同一个算法（``sha1(payload)[:8]``），所以不必按轴名去猜是哪一条。
-
-    只认 ``origin='llm'``：手写轴不是"模型线索"，查不到就是"这条没有模型参与"。
-    """
-    ids = [i for i in dict.fromkeys(case_ids) if i]
-    out: dict[str, dict] = {}
-    for start in range(0, len(ids), _IN_CHUNK):
-        chunk = ids[start:start + _IN_CHUNK]
-        marks = ",".join("?" * len(chunk))
-        rows = conn.execute(
-            "SELECT proposal_id, axis, model, rationale, admitted, hit_fields, ts"
-            f" FROM proposal WHERE origin = 'llm' AND proposal_id IN ({marks})",
-            chunk).fetchall()
-        for pid, axis, model, rationale, admitted, fields, ts in rows:
-            out[pid] = {"case_id": pid, "axis": axis, "model": model or "",
-                        "rationale": rationale or "", "admitted": bool(admitted),
-                        "fields": json.loads(fields or "[]"), "ts": ts}
-    return out
-
-
-def proposal_history_brief(conn: sqlite3.Connection, limit: int = 12) -> str:
-    """把最近的命中/未命中摘要成一段文字，用于**回写提示词**（创新点④）。"""
-    rows = conn.execute(
-        "SELECT axis, admitted, COUNT(*) FROM proposal GROUP BY axis, admitted"
-        " ORDER BY MAX(ts) DESC LIMIT ?", (limit,)).fetchall()
-    if not rows:
-        return ""
-    lines = [f"- {axis}：{'命中' if adm else '未命中'} {n} 条"
-             for axis, adm, n in rows]
-    return "过去已试过的轴族（供你避免重复、并优先扩展命中过的方向）：\n" + "\n".join(lines)
-
-
 # --------------------------------------------------------------------- 攻击场景 PoC
 
 _POC_COLS = ("case_id", "divergence_id", "domain", "scenario", "title", "level",
@@ -352,9 +238,9 @@ def _poc_row(row: dict) -> dict:
 
 # --------------------------------------------------------------------- 扫描任务
 
-_JOB_COLS = ("job_id", "domain", "mode", "limit_n", "seed", "use_llm", "state",
+_JOB_COLS = ("job_id", "domain", "mode", "limit_n", "seed", "state",
              "created", "started", "finished", "total_cases", "total_jobs",
-             "n_divergence", "n_security", "n_proposal", "error")
+             "n_divergence", "n_security", "error")
 
 
 def save_job(conn: sqlite3.Connection, job: dict) -> None:

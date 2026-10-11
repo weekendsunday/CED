@@ -6,11 +6,12 @@
     python main.py --probe          同时起一个探针服务（接入真实产品时用）
     python main.py --check          跑自检（测试 + 已知案例反验证）后退出
 
-控制台里能做的：起扫描任务并实时看进度、按级别 triage 结果、逐条看证据
-（双侧观测 / 消融证据 / 最小复现样本 / 链式复现）、查看模型提案命中率台账。
+控制台里能做的：把请求 / 扫描器报告拖进去自动检测并实时看进度、按级别 triage 结果、
+逐条看证据（双侧观测 / 消融证据 / 最小复现样本 / 链式复现）。
 
-模型是可选旁路：配置 CED_LLM_BASE_URL / CED_LLM_MODEL 后可使用「模型提案」，
-不配置则全链路自动降级为纯确定性模式，扫描照跑。大模型只提案，判定权在内核。
+大模型是可选旁路，只有一个位置：判定出完之后做解读。配置
+CED_LLM_BASE_URL / CED_LLM_MODEL 并勾上「使用模型解读」才走这一层，
+不配置或没勾则检测照跑，只是少一栏解读。判定权始终在内核。
 
 在 VSCode / PyCharm 里直接点运行按钮也可以 —— 工作目录不对也没关系，
 下面会把仓库根目录加进 sys.path。
@@ -31,12 +32,9 @@ TEST_FILES = (
     "ced/tests/test_pipeline.py",
     "ced/tests/test_socket_probe.py",
     "ced/tests/test_chain_e2e.py",
-    "ced/tests/test_assist.py",
-    "ced/tests/test_adopted.py",
     "ced/tests/test_scan_console.py",
     "ced/tests/test_scenario.py",
     "ced/tests/test_metrics_web.py",
-    "ced/tests/test_agent.py",
     "ced/tests/test_url_norm.py",
     "ced/tests/test_host_norm.py",
     "ced/tests/test_query_norm.py",
@@ -46,6 +44,7 @@ TEST_FILES = (
     "ced/tests/test_probe_domains.py",
     "ced/tests/test_capture.py",
     "ced/tests/test_detect.py",
+    "ced/tests/test_interpret.py",
     "ced/tests/test_samples.py",
 )
 

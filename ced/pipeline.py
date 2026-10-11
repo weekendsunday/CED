@@ -63,8 +63,6 @@ class ScanResult:
     findings: list[Finding] = field(default_factory=list)
     #: 参与判定的观测字段（供报告/前端渲染"双侧观测"表，避免各处重复定义）
     compare_keys: tuple[str, ...] = ()
-    #: 真正进池的提案条数 —— 与内置语料重复的提案会被丢弃，所以它可能小于提案总数
-    proposed_cases: int = 0
     #: 参与本次扫描的全部实现 id（热力图需要完整矩阵，而不只是出过分歧的对）
     impl_ids: list[str] = field(default_factory=list)
     #: 本次扫描的领域适配器名 —— 决定 PoC 量化口径与报告口径
@@ -78,14 +76,11 @@ class ScanResult:
 
 
 def scan(adapter, evaluator, *, mode: str = "axis", limit: int | None = None,
-         seed: int = 42, do_minimize: bool = True, extra_cases=(),
-         on_progress=None) -> ScanResult:
+         seed: int = 42, do_minimize: bool = True, on_progress=None) -> ScanResult:
     """跑一次差分扫描。
 
-    ``extra_cases`` —— 追加的候选语料 ``(轴名, 字节)``，来自提案层（手写或模型）。
-    它们**原样入池、且不受 ``limit`` 约束**：limit 只裁剪手写语料的变异扩张，
-    否则提案会被扩张出来的几百条手写变体挤掉，LLM 模式等于没开。
-    与手写语料重合的提案直接丢弃，避免同一份字节带着两个轴名重复出发现。
+    语料只有一处来源：领域适配器自带的手写轴（``adapter.corpus()`` 经
+    ``adapter.expand`` 定向变异）。模型不参与"往哪里搜" —— 它的位置在结论之后。
 
     ``on_progress(done, total, result)`` 每个实现对跑完时调用一次；第三个参数是
     **活的** ScanResult —— 中断时调用方能拿到已完成的部分结果，而不是全丢。
@@ -96,15 +91,10 @@ def scan(adapter, evaluator, *, mode: str = "axis", limit: int | None = None,
     if limit is not None:
         handwritten = handwritten[:limit]
 
-    seen = {payload for _, payload in handwritten}
-    proposed = [(axis, payload) for axis, payload in extra_cases
-                if payload not in seen]
-
     jobs = plan_jobs(adapter, impl_ids, mode)
-    result = ScanResult(total_cases=len(handwritten) + len(proposed),
+    result = ScanResult(total_cases=len(handwritten),
                         jobs=len(jobs),
                         compare_keys=tuple(adapter.compare_keys),
-                        proposed_cases=len(proposed),
                         impl_ids=list(impl_ids),
                         domain=adapter.name)
 
@@ -158,8 +148,6 @@ def scan(adapter, evaluator, *, mode: str = "axis", limit: int | None = None,
     for done, (left_id, right_id, axis) in enumerate(jobs, start=1):
         for _, payload in handwritten:
             run_case(left_id, right_id, axis, payload)
-        for case_axis, payload in proposed:      # 归因落在提案自己的轴名上
-            run_case(left_id, right_id, case_axis, payload)
         if on_progress is not None:
             on_progress(done, len(jobs), result)
 

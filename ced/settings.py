@@ -36,13 +36,16 @@ DEFAULTS: dict = {
         "domains": [],           # 空 = 全部 5 个领域
         "upstream": "",          # 上游代理（例 127.0.0.1:10090）：浏览器 → 捕获 → 上游
     },
+    "detect": {
+        #: 检测完成后，是否让模型把证据翻译成人话。默认关 —— 解读会调模型、
+        #: 有等待成本，而且它是**纯加法**：不开就完全是内核原文案。
+        "interpret": False,
+    },
     "scan": {
         "domain": "http1-framing",
         "mode": "axis",
         "limit": 60,
         "seed": 42,
-        #: 扫描前是否先向模型要一批新提案 —— 在设置里定死，省得每次开页重勾
-        "use_llm": False,
     },
     "paths": {
         "poc_dir": "results/pocs",
@@ -55,8 +58,8 @@ _TYPES = {
             "temperature": float, "max_tokens": int},
     "capture": {"port": int, "jsonl": str, "analyze_all": bool, "domains": list,
                 "upstream": str},
-    "scan": {"domain": str, "mode": str, "limit": int, "seed": int,
-             "use_llm": bool},
+    "detect": {"interpret": bool},
+    "scan": {"domain": str, "mode": str, "limit": int, "seed": int},
     "paths": {"poc_dir": str, "report_dir": str},
 }
 

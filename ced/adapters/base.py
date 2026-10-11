@@ -154,7 +154,7 @@ def http_request_fields(raw: bytes) -> tuple[bytes, bytes] | None:
 def axis_names(adapter) -> tuple[str, ...]:
     """适配器语料里出现的轴名（去重保序）。
 
-    给模型提案时用它避开与手写轴重名 —— 用领域自己的名字空间，
-    而不是像以前那样硬编码分帧领域的 ``axes.AXES``。
+    用领域自己的名字空间，而不是硬编码某个领域的 ``axes.AXES`` ——
+    换领域时调用方不用改。
     """
     return tuple(dict.fromkeys(name for name, _ in adapter.corpus()))

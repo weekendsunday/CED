@@ -7,7 +7,7 @@
 控制台由三部分组成：
   * 扫描任务   —— POST /api/scan/start + SSE /api/scan/events 实时进度
   * 结果 triage —— /api/scan/result，形状来自 ``report.renderer.result_payload``
-  * 提案台账   —— /api/assist/*，展示"模型只提案、内核只裁决"的命中率
+  * 模型解读   —— /api/assist/status + 检测结果里的 interpret 字段（判定仍由内核给）
 
 SSE 与页面都不用任何第三方库：事件流是手写的 ``text/event-stream``。
 """
@@ -29,21 +29,25 @@ from .. import detect as detect_entry
 from .. import settings as app_settings
 from ..adapters import ADAPTERS
 from ..adapters import get as get_adapter
-from ..analysis import all_pairs, analyze, analyze_pairs
+from ..analysis import analyze
 from ..capture.web import CaptureRunner
 from ..contracts import ImplSpec
 from ..impls import reference
 from ..metrics import matrix_heatmap, scan_metrics
-from ..orchestrate.topology import demo, load
+from ..orchestrate.topology import load
 from ..probe import Evaluator
 from ..report.renderer import result_payload
 from ..scan import JobRegistry
+from ..scan.job import DONE, FAILED
 from ..scan import runner as scan_runner
 
 STATIC = Path(__file__).resolve().parent
+#: 前端静态资源白名单（拆分自 index.html）。不按扩展名通配，避免变成任意文件读取。
+_ASSETS = {
+    "/app.css": ("app.css", "text/css; charset=utf-8"),
+    "/app.js": ("app.js", "application/javascript; charset=utf-8"),
+}
 DEFAULT_PORT = 8777
-#: 单条请求的字节上限 —— 本工具面向单条请求，不是整个流量包
-MAX_PAYLOAD = 1 << 20
 #: 扫描用例上限：语料是"轴 × 定向变异"，上千条已足够，再多只是重复
 MAX_CASES = 5000
 #: SSE 空闲心跳间隔（秒）—— 没有新事件时也往连接上写一个注释行，防空闲超时
@@ -114,7 +118,7 @@ def _case_brief(spec: dict) -> dict:
             "payload_len": len(base64.b64decode(spec["payload_b64"]))}
 
 
-# ------------------------------------------------------------------ 扫描与提案
+# ------------------------------------------------------------------ 扫描
 
 def _jobs_view() -> dict:
     """任务列表 = 库里的历史 + 内存里更"新"的实时状态。
@@ -135,7 +139,6 @@ def _jobs_view() -> dict:
     for job_id, row in rows.items():
         live = REGISTRY.get(job_id)
         item = dict(row)
-        item["use_llm"] = bool(item.get("use_llm"))
         item["live"] = live is not None
         if live is not None:
             item.update({"state": live.state, "done_jobs": live.done_jobs,
@@ -150,46 +153,37 @@ def _assist_status() -> dict:
         from ..assist.client import LlmClient, config_from_env
     except ImportError:                     # 旁路被整个删掉时，控制台也不该报错
         return {"available": False, "model": "", "base_url": "",
-                "reason": "提案层不可用（ced/assist/ 不存在）—— 扫描仍然照跑"}
+                "reason": "解读层不可用（ced/assist/ 不存在）—— 检测仍然照跑"}
 
     cfg = config_from_env()
     client = LlmClient(cfg)
     reason = "" if client.available else (
         "未配置模型：设置 CED_LLM_BASE_URL 与 CED_LLM_MODEL"
-        "（OpenAI 兼容端点）后可用；未配置时扫描仍然照跑，只是不带模型提案")
+        "（OpenAI 兼容端点）后可用；未配置时检测仍然照跑，只是不带模型解读")
     return {"available": client.available, "model": cfg.model,
             "base_url": cfg.base_url, "reason": reason}
 
 
-def _ledger_view(limit: int = 60) -> dict:
-    conn = store.connect(scan_runner.db_path())
-    try:
-        return {"stats": store.proposal_stats(conn),
-                "recent": store.recent_proposals(conn, limit=limit)}
-    finally:
-        conn.close()
+def _make_interpreter():
+    """造一个解读层回调；模型没配好返回 None（检测照跑，只是少一栏解读）。
 
-
-def _attach_model_clues(payload: dict, result) -> None:
-    """给每条发现挂上"这条是模型猜过的吗"：猜的是什么、过了准入没有。
-
-    挂不上就留 ``None``，绝不编 —— 前端据此如实说"这条没有模型参与"。台账是旁路，
-    读不到（库被删/路径不对）时整栏留空，不能让结果页打不开。
+    解读层是**可选**的加法：它跑在内核出完级之后，只往发现上挂一段文字，
+    判定字段一概不碰（见 ``ced/assist/interpret.py`` 的三条硬约束）。
     """
-    case_ids = [f.case_id for f in result.findings]
-    clues: dict[str, dict] = {}
-    if case_ids:
-        conn = None
-        try:
-            conn = store.connect(scan_runner.db_path())
-            clues = store.proposal_clues(conn, case_ids)
-        except Exception:                  # noqa: BLE001 —— 线索是可选装饰，不是结果
-            clues = {}
-        finally:
-            if conn is not None:
-                conn.close()
-    for item in payload.get("findings", ()):
-        item["clue"] = clues.get(item.get("case_id"))
+    try:
+        from ..assist.client import LlmClient, config_from_env
+        from ..assist.interpret import interpret as interpret_finding
+    except ImportError:                     # 旁路被整个删掉时，检测仍要能用
+        return None
+
+    client = LlmClient(config_from_env())
+    if not client.available:
+        return None
+
+    def run_one(finding: dict) -> dict:
+        return interpret_finding(client, finding=finding).to_dict()
+
+    return run_one
 
 
 class _Server(ThreadingHTTPServer):
@@ -239,6 +233,8 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write((STATIC / "index.html").read_bytes())
             return
+        if url.path in _ASSETS:
+            return self._asset(url.path)
         if url.path == "/api/health":
             return self._json({"ok": True})
         if url.path == "/api/impls":
@@ -262,8 +258,6 @@ class Handler(BaseHTTPRequestHandler):
             return self._scan_heatmap((query.get("job_id") or [""])[0])
         if url.path == "/api/assist/status":
             return self._json(_assist_status())
-        if url.path == "/api/assist/ledger":
-            return self._json(_ledger_view())
         if url.path == "/api/capture/state":
             return self._json(CAPTURE.state())
         if url.path == "/api/capture/records":
@@ -285,6 +279,14 @@ class Handler(BaseHTTPRequestHandler):
         if url.path.startswith("/samples/"):
             return self._sample(url.path)
         return self._json({"error": "not found"}, 404)
+
+    def _asset(self, path: str) -> None:
+        """拆分出去的 css / js。同样不缓存 —— 前端迭代频繁，缓存会让人看到旧页面。"""
+        name, ctype = _ASSETS[path]
+        target = STATIC / name
+        if not target.is_file():
+            return self._json({"error": f"缺少前端资源：{name}（升级时请一并更新）"}, 500)
+        return self._send(target.read_bytes(), ctype)
 
     def _sample(self, path: str) -> None:
         """把 samples/ 下的样本**按字节**发给前端。
@@ -310,18 +312,12 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as exc:
             return self._json({"error": f"请求体不是合法 JSON：{exc}"}, 400)
 
-        if url.path == "/api/probe":
-            return self._probe(body)
         if url.path == "/api/regression":
             return self._regression()
         if url.path == "/api/scan/start":
             return self._scan_start(body)
         if url.path == "/api/scan/abort":
             return self._scan_abort(body)
-        if url.path == "/api/assist/propose":
-            return self._assist_propose(body)
-        if url.path == "/api/verify":
-            return self._verify(body)
         if url.path == "/api/capture/start":
             return self._capture_start(body)
         if url.path == "/api/capture/stop":
@@ -355,12 +351,16 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError as exc:
             return self._json({"error": str(exc)}, 400)
 
+        # 解读层：显式勾了才调模型；模型没配好自动回落为"不解读"
+        interpreter = _make_interpreter() if body.get("interpret") else None
+
         job = DETECT_REGISTRY.create(domain="detect", mode="detect", limit=1)
         job.emit({"type": "queued", "kind": kind, "why": why})
 
         def worker() -> None:
             try:
-                result = detect_entry.run(text, domains=domains, emit=job.emit)
+                result = detect_entry.run(text, domains=domains, emit=job.emit,
+                                          interpreter=interpreter)
                 job.emit({"type": "done", "result": result,
                           "summary": result.get("summary", {})})
                 job.finish(DONE)
@@ -411,96 +411,7 @@ class Handler(BaseHTTPRequestHandler):
         return self._json(result, 200 if result.get("ok") else 400)
 
     # ----------------------------------------------------------------- 业务
-    def _evaluator(self, topology_path: str, domain: str = "http1-framing"):
-        if topology_path:
-            topo = load(topology_path)
-        else:
-            topo = demo(domain)
-        return topo, Evaluator(topo.impls)
 
-    def _probe(self, body: dict) -> None:
-        try:
-            payload = base64.b64decode(body.get("data_b64") or "", validate=True)
-        except Exception as exc:
-            return self._json({"error": f"data_b64 不是合法 base64：{exc}"}, 400)
-        if not payload:
-            return self._json({"error": "没有收到字节 —— 先选一个文件"}, 400)
-        if len(payload) > MAX_PAYLOAD:
-            return self._json(
-                {"error": f"文件太大（{len(payload)} 字节 > {MAX_PAYLOAD}）——"
-                          f"本工具面向单条请求，不是整个流量包"}, 400)
-
-        domain = (body.get("domain") or "http1-framing").strip()
-        if domain not in ADAPTERS:
-            return self._json(
-                {"error": f"未知领域：{domain}（可选：{', '.join(sorted(ADAPTERS))}）"}, 400)
-        try:
-            topo, evaluator = self._evaluator((body.get("topology") or "").strip(), domain)
-        except Exception as exc:
-            return self._json({"error": f"拓扑文件读不了：{exc}"}, 400)
-
-        adapter = get_adapter(domain)
-
-        if body.get("mode") == "pair":
-            left, right = body.get("left"), body.get("right")
-            missing = [i for i in (left, right) if i not in evaluator.specs]
-            if missing:
-                return self._json({"error": f"拓扑里没有这些实现：{missing}"}, 400)
-            pairs = [(left, right)]
-        else:
-            pairs = all_pairs(evaluator.specs)
-
-        try:
-            results = analyze_pairs(payload, pairs, evaluator, adapter,
-                                    minimize=True)
-        except Exception as exc:
-            return self._json({"error": f"{type(exc).__name__}: {exc}"}, 500)
-
-        return self._json({
-            "payload_len": len(payload),
-            "payload_repr": repr(payload),
-            "topology": topo.describe(),
-            "pairs_tested": len(pairs),
-            "diverged": sum(1 for r in results if r["diverged"]),
-            "results": results,
-        })
-
-    def _verify(self, body: dict) -> None:
-        """验证外部发现：把别人的命中当假设，用同一条 oracle 链证实/证伪。
-
-        判定由内核给出，不看报告方自述 —— 因此这里绝不接受调用方传进来的"结论"。
-        """
-        from ..intake import load
-        from ..intake import verify as verify_hypotheses
-
-        text = body.get("text") or ""
-        if not text.strip():
-            return self._json({"error": "没有内容可验证 —— 先贴一份清单"}, 400)
-        fmt = (body.get("fmt") or "auto").strip()
-        domains = [d for d in (body.get("domains") or []) if d in ADAPTERS]
-        try:
-            hypotheses = load(text, fmt=fmt)
-        except Exception as exc:
-            return self._json({"error": f"读不了这份清单：{exc}"}, 400)
-        if not hypotheses:
-            return self._json({"error": "识别到了格式，但里面没有可验证的条目"}, 400)
-        try:
-            results = verify_hypotheses(hypotheses, domains=domains or None)
-        except Exception as exc:
-            return self._json({"error": f"{type(exc).__name__}: {exc}"}, 500)
-
-        counts = {k: sum(1 for v in results if v.verdict == k)
-                  for k in ("confirmed", "refuted", "unverifiable")}
-        return self._json({
-            "counts": counts,
-            "items": [{
-                "verdict": v.verdict, "target": v.hypothesis.target,
-                "source": v.hypothesis.source, "domain": v.domain,
-                "left": v.left, "right": v.right, "level": v.level,
-                "kind": v.kind, "reason": v.reason, "evidence": v.evidence,
-                "detail": v.detail,
-            } for v in results],
-        })
 
     def _case_detail(self, case_id: str) -> None:
         cases = {c["id"]: c for c in regression.load_cases()}
@@ -569,7 +480,7 @@ class Handler(BaseHTTPRequestHandler):
 
         job = scan_runner.start(
             REGISTRY, domain=domain, mode=mode, limit=limit, seed=seed,
-            use_llm=bool(body.get("use_llm")), topology=topology)
+            topology=topology)
         return self._json({"job_id": job.job_id})
 
     def _scan_abort(self, body: dict) -> None:
@@ -587,7 +498,6 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(
                 {"error": f"任务 {job_id} 还没有产出结果（状态 {job.state}）"}, 409)
         payload = result_payload(job.result)
-        _attach_model_clues(payload, job.result)
         return self._json({"job": job.brief(), "result": payload})
 
     def _scan_metrics(self, job_id: str) -> None:
@@ -646,64 +556,6 @@ class Handler(BaseHTTPRequestHandler):
                     return
         except (BrokenPipeError, ConnectionResetError, OSError):
             return                          # 浏览器关掉了页面而已，不是错误
-
-    # ------------------------------------------------------------------ 提案台账
-    def _assist_propose(self, body: dict) -> None:
-        try:
-            from ..adapters.base import axis_names
-            from ..assist.client import LlmClient, config_from_env
-            from ..assist.compile import admit as admit_proposals
-            from ..assist.ledger import record_many, record_rejected
-            from ..assist.propose import propose as propose_axes
-
-            domain = (body.get("domain") or "http1-framing").strip()
-            if domain not in ADAPTERS:
-                return self._json(
-                    {"error": f"未知领域：{domain}（可选：{', '.join(sorted(ADAPTERS))}）"}, 400)
-        except ImportError as exc:
-            return self._json(
-                {"error": f"提案层不可用（{exc}）—— 扫描不受影响"}, 400)
-
-        try:
-            n = int(body.get("n") or 8)
-        except (TypeError, ValueError):
-            return self._json({"error": "n 必须是整数"}, 400)
-        n = max(1, min(n, 20))
-
-        client = LlmClient(config_from_env())
-        if not client.available:
-            return self._json({"error": _assist_status()["reason"]}, 400)
-
-        adapter = get_adapter(domain)
-        evaluator = Evaluator(demo(domain).impls)
-        conn = store.connect(scan_runner.db_path())
-        try:
-            proposals, rejected, raw = propose_axes(
-                client, adapter_name=adapter.name, n=n,
-                existing_axes=axis_names(adapter),
-                history=store.proposal_history_brief(conn))
-            for item in rejected:
-                record_rejected(conn, item)
-            admissions = admit_proposals(proposals, adapter, evaluator)
-            record_many(conn, admissions)
-
-            items = [{"proposal_id": a.proposal.proposal_id, "axis": a.proposal.axis,
-                      "compiled": True, "admitted": a.admitted,
-                      "fields": list(a.fields), "rationale": a.proposal.rationale,
-                      "note": a.detail,
-                      "payload_repr": repr(a.proposal.payload)[:600]}
-                     for a in admissions]
-            items += [{"proposal_id": "", "axis": r.axis, "compiled": False,
-                       "admitted": False, "fields": [], "rationale": "",
-                       "note": f"{r.reason}：{r.detail}"[:300], "payload_repr": ""}
-                      for r in rejected]
-            return self._json({"items": items, "stats": store.proposal_stats(conn),
-                               "raw": raw[:4000]})
-        except Exception as exc:
-            return self._json({"error": f"{type(exc).__name__}: {exc}"}, 500)
-        finally:
-            conn.close()
-
 
 # ---------------------------------------------------------------------- 启动
 

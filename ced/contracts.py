@@ -4,7 +4,6 @@
 """
 from __future__ import annotations
 
-import hashlib
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -163,51 +162,6 @@ class Finding:
     @property
     def case_id(self) -> str:
         return self.divergence.case_id
-
-
-# --------------------------------------------------------------------------- 提案
-
-#: 提案来源。手写轴与模型提案走**同一条**管线，只有来源可追溯。
-ORIGIN_HANDWRITTEN = "handwritten"
-ORIGIN_LLM = "llm"
-
-
-@dataclass(frozen=True)
-class Proposal:
-    """一条「往哪里搜」的提案。
-
-    **生命周期不变式**：提案不是结论。它只能以「变成一条候选语料」的方式影响
-    搜索方向；能不能升格成发现，唯一取决于确定性差分 oracle（见 ``pipeline.scan``）。
-
-    本类型刻意**不携带任何判定字段**（没有 level / cwe / scenario / controllable）——
-    大模型在类型上就写不出结论，而不是靠提示词劝它别乱说。
-    """
-
-    axis: str
-    payload: bytes
-    origin: str = ORIGIN_HANDWRITTEN
-    rationale: str = ""
-    model: str = ""
-
-    @property
-    def proposal_id(self) -> str:
-        return hashlib.sha1(self.payload).hexdigest()[:8]
-
-    def to_case(self) -> tuple[str, bytes]:
-        """落到与手写轴**完全相同**的语料契约：``(轴名, 原始字节)``。
-
-        正因为契约相同，扩轴不需要改引擎一行（见 ``DomainAdapter.expand``）。
-        """
-        return (self.axis, self.payload)
-
-
-@dataclass(frozen=True)
-class Rejected:
-    """没通过门槛的提案 —— 留痕，但不进结果。"""
-
-    axis: str
-    reason: str
-    detail: str = ""
 
 
 # --------------------------------------------------------------------------- 量化

@@ -16,10 +16,15 @@
     {"type": "stage",  "node": <identify|extract|diff|judge|poc|report>, "state": running|done, "detail": str}
     {"type": "report", "line": str}        # 报告逐行吐，边跑边看
     {"type": "finding", ...}               # 每定出一条就推一条
+    {"type": "interpret", "key": str, ...}  # 解读层（可选）事后补的一段模型解读
+
+解读层（``interpreter``）是**可选的加法**：它跑在内核出完级之后，只往 ``Finding`` 上
+挂一个 ``interpret`` 字段，判定字段一个都不碰；没传或返回不可用就不挂，报告原样。
 """
 from __future__ import annotations
 
 import hashlib
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -128,14 +133,69 @@ class _Reporter:
         if self._emit:
             self._emit({"type": "finding", **payload})
 
+    def interpret(self, key: str, payload: dict) -> None:
+        """解读层完成后单独推 —— 它比 finding 晚，前端按 key 补到既有条目上。"""
+        if self._emit:
+            self._emit({"type": "interpret", "key": key, "interpret": payload})
+
     def text(self) -> str:
         return "\n".join(self.lines)
+
+
+# --------------------------------------------------------------------------- 解读层（可选）
+
+def _interpret_findings(findings: list[dict],
+                        interpreter: Callable[[dict], dict] | None,
+                        rep: _Reporter) -> None:
+    """给已定级的发现补一段模型解读。**纯加法**：拿不到就什么都不挂。
+
+    为什么并发：一条发现一次模型调用，5 个领域串行会等几十秒；它们彼此独立，
+    并发跑把等待压到单次调用的量级。预算由调用方（服务端）决定，这里不设上限 ——
+    发现数天然被领域数（5）封顶。
+    """
+    if interpreter is None or not findings:
+        return
+    rep.stage("judge", "running", "模型解读中（可选，非判定）…")
+    try:
+        with ThreadPoolExecutor(max_workers=min(4, len(findings))) as pool:
+            results = list(pool.map(interpreter, findings))
+    except Exception as exc:                     # noqa: BLE001 —— 解读挂了不该拖垮检测
+        results = [{"ok": False, "error": f"{type(exc).__name__}: {exc}"}] * len(findings)
+
+    ok = 0
+    for finding, data in zip(findings, results):
+        data = data if isinstance(data, dict) else {"ok": False, "error": "解读返回非对象"}
+        if data.get("ok"):
+            ok += 1
+        else:
+            data = {"ok": False, "error": data.get("error") or "解读不可用"}
+        finding["interpret"] = data
+        rep.interpret(str(finding.get("case_id") or finding.get("target") or ""), data)
+
+    if ok:
+        rep.stage("judge", "done", f"模型解读 {ok}/{len(findings)} 条（非判定，仅供参考）")
+    else:
+        rep.stage("judge", "done", "模型解读不可用，已回落内核原文案")
+
+
+def _interpret_lines(item: dict) -> list[str]:
+    """报告里那个加出来的解读小栏 —— 明确标注"非判定"，与上面几行分开。"""
+    data = item.get("interpret")
+    if not isinstance(data, dict) or not data.get("ok"):
+        return []
+    out = [f"- 模型解读（**非判定**，仅供参考）：{data.get('impact') or '—'}"]
+    if data.get("cwe_hint"):
+        out.append(f"- 模型 CWE 建议（非判定）：{data['cwe_hint']}")
+    if data.get("fix"):
+        out.append(f"- 模型修复建议（非判定）：{data['fix']}")
+    return out
 
 
 # --------------------------------------------------------------------------- 原始请求字节
 
 def _run_raw(raw: bytes, domains: list[str] | None, rep: _Reporter,
-             result: Detection) -> None:
+             result: Detection,
+             interpreter: Callable[[dict], dict] | None = None) -> None:
     """一条请求扇出 5 个领域，逐对差分 + 消融判定。"""
     result.chain.append(f"扇出领域：{len(domains or domain_names())} 个")
     rep.stage("extract", "running", "按领域各取一段（整条请求 / target / Host / 查询串 / 字节）")
@@ -215,6 +275,8 @@ def _run_raw(raw: bytes, domains: list[str] | None, rep: _Reporter,
     result.chain.append(f"逐对差分：{total_pairs} 对 → 分歧 {total_div} 条")
     result.chain.append(f"消融判定：安全级 {total_sec} 条，未定位到承载者的一律 unknown")
 
+    _interpret_findings(result.findings, interpreter, rep)
+
     # 报告：把每条发现的原因/证据写全（实时报告已经逐行吐过，这里补细节）
     secure = [f for f in result.findings if f["level"] == "security"]
     if secure:
@@ -230,6 +292,8 @@ def _run_raw(raw: bytes, domains: list[str] | None, rep: _Reporter,
             rep.line(f"- 消融证据：{item['ablation'] or '—'}")
             rep.line(f"- 安全后果：{item['effect'] or '—'}")
             rep.line(f"- 修复建议：{item['fix'] or '—'}")
+            for extra in _interpret_lines(item):
+                rep.line(extra)
         rep.stage("poc", "done", f"{len(secure)} 条安全级发现可直接生成端到端 PoC")
     else:
         rep.line("")
@@ -240,7 +304,8 @@ def _run_raw(raw: bytes, domains: list[str] | None, rep: _Reporter,
 # --------------------------------------------------------------------------- 外部工具结果
 
 def _run_external(text: str, kind: str, hypotheses: list, domains: list[str] | None,
-                  rep: _Reporter, result: Detection) -> None:
+                  rep: _Reporter, result: Detection,
+                  interpreter: Callable[[dict], dict] | None = None) -> None:
     result.chain.append(f"解析外部发现：{len(hypotheses)} 条假设（{kind}）")
     rep.stage("extract", "running", f"解析 {kind} → {len(hypotheses)} 条假设")
     rep.stage("extract", "done", f"{len(hypotheses)} 条假设就绪")
@@ -266,6 +331,7 @@ def _run_external(text: str, kind: str, hypotheses: list, domains: list[str] | N
     rep.stage("diff", "done", f"三态：已证实 {counts[CONFIRMED]} / 未证实 {counts[REFUTED]} / "
                               f"证不了 {counts[UNVERIFIABLE]}")
     rep.stage("judge", "done", "判定全部由内核给出，不由报告方自述")
+    _interpret_findings(result.findings, interpreter, rep)
     rep.stage("poc", "done", "已证实的条目可用最小复现样本复现（见各条的领域）")
     result.summary = {"input_items": len(hypotheses), "pairs": 0, "divergences": 0,
                       "security": counts[CONFIRMED],
@@ -279,8 +345,14 @@ def _run_external(text: str, kind: str, hypotheses: list, domains: list[str] | N
 # --------------------------------------------------------------------------- 入口
 
 def run(text: str, *, domains: list[str] | None = None,
-        emit: Callable[[dict], None] | None = None) -> dict:
-    """跑一次完整检测。``emit`` 收到实时事件（阶段 / 报告行 / 发现）。"""
+        emit: Callable[[dict], None] | None = None,
+        interpreter: Callable[[dict], dict] | None = None) -> dict:
+    """跑一次完整检测。``emit`` 收到实时事件（阶段 / 报告行 / 发现）。
+
+    ``interpreter`` 是**可选**的解读层回调：传入则在判定完成后给每条发现补一段模型
+    解读（``Finding['interpret']``），不传就完全不调用模型。回调返回
+    ``{"ok": bool, ...}``，内部异常由 ``_interpret_findings`` 兜住，不影响检测结果。
+    """
     rep = _Reporter(emit)
     rep.stage("identify", "running")
     kind, why, hypotheses = identify(text)          # 认不出会抛 ValueError（人话）
@@ -299,10 +371,10 @@ def run(text: str, *, domains: list[str] | None = None,
     if kind == "raw-request":
         raw = text.encode("latin-1", "replace")
         rep.line(f"1. 识别输入 —— 原始请求字节（{len(raw)} 字节）")
-        _run_raw(raw, domains, rep, result)
+        _run_raw(raw, domains, rep, result, interpreter)
     else:
         rep.line(f"1. 识别输入 —— {kind}（{len(hypotheses)} 条假设）")
-        _run_external(text, kind, hypotheses, domains, rep, result)
+        _run_external(text, kind, hypotheses, domains, rep, result, interpreter)
 
     rep.line("")
     rep.line("## 链路小结")

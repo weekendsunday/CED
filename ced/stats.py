@@ -66,9 +66,15 @@ def known_case_count() -> int:
     return len(load_cases(CASES_DIR))
 
 
-def frontend_lines() -> int:
-    page = ROOT / "ced" / "web" / "index.html"
-    return _count_lines([page]) if page.is_file() else 0
+def frontend_files() -> list[Path]:
+    """网页控制台的前端静态资源：页面 + 样式 + 脚本。
+
+    三者都是手写的、由 ``server.py`` 白名单直出，所以要一起数 —— 只数
+    ``index.html`` 会在拆分资源之后悄悄漏掉大半行数。
+    """
+    web = ROOT / "ced" / "web"
+    return [p for p in (web / "index.html", web / "app.css", web / "app.js")
+            if p.is_file()]
 
 
 def collect() -> dict:
@@ -85,7 +91,8 @@ def collect() -> dict:
         "test_files": len(tst),
         "test_lines": _count_lines(tst),
         "test_cases": test_case_count(),
-        "frontend_lines": frontend_lines(),
+        "frontend_files": len(frontend_files()),
+        "frontend_lines": _count_lines(frontend_files()),
     }
 
 
@@ -105,7 +112,8 @@ def render_markdown() -> str:
         (f"| 代码量 | 源码 {s['src_files']} 文件 {s['src_lines']} 行；"
          f"测试 {s['test_files']} 文件 {s['test_lines']} 行（测试方法 {s['test_cases']} 个，静态计数；"
          f"实跑结果见 `python main.py --check`）；"
-         f"前端单页 {s['frontend_lines']} 行 |"),
+         f"前端 {s['frontend_files']} 文件 {s['frontend_lines']} 行"
+         f"（`index.html` / `app.css` / `app.js`）|"),
         "",
         "> 本表由 `python -m ced stats` 现场从代码生成，不手写。",
     ]

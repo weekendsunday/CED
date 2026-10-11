@@ -1,8 +1,8 @@
 """OpenAI 兼容 HTTP 客户端（只用 urllib，零第三方依赖）。
 
 整个包里**唯一**发起网络请求的地方就是这里。没有配置模型时 ``available`` 为
-False，``chat`` 抛 ``LlmUnavailable`` —— 调用方据此走全链路降级（返回空提案），
-绝不让"模型没配好"打断扫描。
+False，``chat`` 抛 ``LlmUnavailable`` —— 调用方据此降级（不挂解读栏），
+绝不让"模型没配好"打断检测。
 """
 from __future__ import annotations
 
