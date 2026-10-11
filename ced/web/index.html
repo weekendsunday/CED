@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>CED — 产品耦合误差检测</title>
+<title>CED 耦合误差检测平台</title>
 <style>
 /* ==========================================================================
    设计令牌（色板 / 字号 / 间距 / 圆角 / 阴影）
@@ -489,9 +489,10 @@ dialog.sheet-wide{width:min(1000px,94vw)}
 <header class="masthead">
   <div class="shell">
     <div class="brand">
-      <h1>CED — 产品耦合误差检测</h1>
-      <p class="sub">把同一份请求字节交给<b>两个实现</b>，看它们对「这条请求到哪里结束」的判断是否一致。
-         不一致、且由攻击者可控的字节承载 → 就是<b>产品耦合误差</b>。</p>
+      <h1>CED 耦合误差检测平台</h1>
+      <p class="sub">将同一份请求字节交由<b>多个实现</b>独立解析，识别其对协议语义的解释差异，
+        定位可由外部输入承载的分歧点，并输出可复核的证据链与复现脚本。
+        结论由确定性判定引擎给出，全部证据可离线复核。仅限授权范围内使用。</p>
     </div>
     <ul class="capbar">
       <li data-cap="domains"><span class="cap-n">—</span><span class="cap-k">已注册领域</span></li>
@@ -507,12 +508,12 @@ dialog.sheet-wide{width:min(1000px,94vw)}
   <!-- ============ 检测：唯一入口 ============ -->
   <section id="tab-detect">
     <div class="card">
-      <div class="card-hd"><h2>检测</h2><span class="hint">把东西粘/拖进来就行 —— 它自己判断这是什么、自动选路、跑完整链路。<b>输入是字节或清单，不是源码/程序</b></span>
+      <div class="card-hd"><h2>检测</h2><span class="hint">粘贴或拖入请求字节 / 流量清单，系统自动识别格式并执行完整检测流程（差分 → 承载者定位 → 分级 → 复现脚本）</span>
         <button class="btn btn-ghost hd-right" id="set-open" title="模型 API、捕获默认值、扫描默认值、输出路径">设置…</button></div>
-      <textarea class="paste" id="dt-text" rows="7" placeholder="粘这里，哪种都行：
-① 一条 HTTP 请求的原始字节（抓包导出 —— 用记事本另存会改换行符，别那么干）
-② nuclei JSON / JSONL、Burp XML、HAR、curl 命令行、URL 清单
-③ 或者点下面的「开始自动捕获」，让浏览器/客户端的请求自己流进来"></textarea>
+      <textarea class="paste" id="dt-text" rows="7" placeholder="支持以下输入格式，系统自动识别：
+① HTTP 请求原始字节（抓包导出）
+② nuclei JSON/JSONL · Burp XML · HAR · curl 命令行 · URL 清单
+③ 也可通过下方「开始流量接入」实时接入浏览器 / 客户端流量"></textarea>
       <div class="toolbar">
         <button class="btn btn-primary" id="dt-go">开始检测</button>
         <button class="btn btn-ghost" id="dt-file-btn">选择文件…</button>
@@ -521,24 +522,24 @@ dialog.sheet-wide{width:min(1000px,94vw)}
         <select class="select" id="dt-domain"><option value="">全部 5 个领域</option></select>
       </div>
       <div class="toolbar">
-        <span class="note">或让请求自己流进来：</span>
-        <button class="btn btn-ghost" id="cap-go">开始自动捕获</button>
-        <button class="btn btn-danger" id="cap-stop" disabled>停止</button>
+        <span class="note">或实时接入流量：</span>
+        <button class="btn btn-ghost" id="cap-go">开始流量接入</button>
+        <button class="btn btn-danger" id="cap-stop" disabled>停止接入</button>
         <span class="note" id="cap-state">未启动</span>
-        <button class="btn btn-ghost cap-settings" id="cap-open">捕获设置…</button>
+        <button class="btn btn-ghost cap-settings" id="cap-open">捕获参数…</button>
         <span class="note" id="cap-summary">端口 18081 · 全部 5 个领域 · 跳过静态资源 · 不写记录文件</span>
       </div>
-      <div class="toolbar"><span class="note" id="dt-hint">识别与编排全自动；判定由确定性内核给出</span></div>
+      <div class="toolbar"><span class="note" id="dt-hint">输入格式自动识别；结论由确定性判定引擎给出，全部证据可复核</span></div>
       </div>
       <div id="dt-err"></div>
       <div id="dt-warn"></div>
-      <div class="note">原始请求要<b>字节保真</b>：用「选择文件」读抓包导出的 .bin/.txt（按字节读入），
-        或直接用下面的「自动捕获」；<b>粘贴框里的 CRLF 会被浏览器规范化成 LF</b>（粘文本类输入如
-        nuclei / curl / URL 清单则无妨）。文件按字节读入 —— 含中文的文本类文件在框里显示可能乱码，不影响分析。</div>
+      <div class="note">注意 <b>字节保真</b>：HTTP 请求请使用「选择文件」读入抓包导出的 .bin/.txt（按字节读入），
+        或使用「流量接入」实时捕获；粘贴文本时浏览器会将 CRLF 规范化为 LF（对 nuclei / curl / URL 清单等
+        文本类输入无影响）。含中文的文本文件在框内显示可能乱码，不影响分析。</div>
     </div>
 
     <div class="card">
-      <div class="card-hd"><h2>自动链路</h2><span class="hint">实时显示它跑到哪一步（绿=完成，蓝=进行中）</span></div>
+      <div class="card-hd"><h2>执行进度</h2><span class="hint">各阶段实时状态（绿 = 完成，蓝 = 执行中）</span></div>
       <div class="dag-bar"><span class="state" id="dt-chain">待运行</span>
         <span class="note" id="dt-elapsed"></span></div>
       <div class="dag" id="dt-dag"></div>
@@ -546,14 +547,14 @@ dialog.sheet-wide{width:min(1000px,94vw)}
     </div>
 
     <div class="card">
-      <div class="card-hd"><h2>实时报告</h2><span class="hint">边跑边吐，不用等跑完</span>
+      <div class="card-hd"><h2>实时报告</h2><span class="hint">检测过程中持续输出，无需等待完成</span>
         <button class="btn btn-ghost" id="dt-copy">复制报告</button>
         <button class="btn btn-ghost" id="dt-download">下载 .md</button></div>
-      <pre class="report" id="dt-report">（还没开始）</pre>
+      <pre class="report" id="dt-report">尚未开始检测</pre>
     </div>
 
     <div class="card">
-      <div class="card-hd"><h2>发现</h2><span class="hint">点一条看证据；安全级的会带端到端 PoC</span></div>
+      <div class="card-hd"><h2>发现</h2><span class="hint">选择条目查看完整证据链；security 级发现附带可执行复现脚本</span></div>
       <div class="split">
         <div><div class="toolbar">
           <select class="select" id="dt-filter">
@@ -563,16 +564,15 @@ dialog.sheet-wide{width:min(1000px,94vw)}
           </select></div>
           <div class="levels" id="dt-levels"></div>
           <div class="note" id="dt-count">0 条</div><div class="evlist" id="dt-list">
-          <div class="empty"><b>还没有结果</b>先在上面点「开始检测」</div></div></div>
-        <div><div id="dt-evidence" class="note">← 左边点一条</div></div>
+          <div class="empty"><b>暂无结果</b>请在上方点击「开始检测」</div></div></div>
+        <div><div id="dt-evidence" class="note">← 请选择左侧条目</div></div>
       </div>
     </div>
 
     <div class="card">
-      <div class="card-hd"><h2>自动捕获</h2>
-        <span class="hint">把浏览器 / 客户端 / 系统代理指向<b>设置里那个端口</b>，请求自动进来跑差分 ——
-          HTTPS 只做 <code>CONNECT</code> 直通不拆包；仅用于你自有或已获授权的目标</span>
-        <button class="btn btn-ghost cap-settings" id="cap-open2">捕获设置…</button></div>
+      <div class="card-hd"><h2>流量接入</h2>
+        <span class="hint">将浏览器 / 客户端代理指向下方端口，流量将自动进入检测流程；HTTPS 经本地证书解密（可选），全部数据仅保留本机。仅用于已获授权的目标</span>
+        <button class="btn btn-ghost cap-settings" id="cap-open2">捕获参数…</button></div>
       <div id="cap-err"></div>
       <div class="statcards" id="cap-stats"></div>
       <div class="split">
@@ -588,21 +588,21 @@ dialog.sheet-wide{width:min(1000px,94vw)}
           </div>
           <div class="note" id="cap-count">0 条</div>
           <div class="evlist" id="cap-list">
-            <div class="empty"><b>还没有请求</b>点上面的「开始自动捕获」，再把代理指过来</div>
+            <div class="empty"><b>暂无请求</b>点击「开始流量接入」后，将客户端代理指向上方端口</div>
           </div>
         </div>
         <div>
-          <div id="cap-evidence" class="note">← 左边点一条</div>
+          <div id="cap-evidence" class="note">← 请选择左侧条目</div>
         </div>
       </div>
     </div>
 
   <div class="sect">
-    <div class="sect-hd">内置矩阵扫描 <span class="hint">5 领域 × 51 实现互相差分</span></div>
+    <div class="sect-hd">矩阵扫描 <span class="hint">5 个领域 · 51 个参照实现，定向差分</span></div>
   <section class="legacy" id="tab-scan">
     <div class="card">
       <div class="card-hd"><h2>扫描任务</h2>
-          <span class="hint">同一份字节做定向差分扫描，命中即产出可复现证据链</span></div>
+          <span class="hint">对同一份字节执行定向差分扫描，命中项自动产出证据链与最小复现样本</span></div>
       <div class="form-row-5">
         <div class="field"><label>领域</label><select id="scan-domain"></select></div>
         <div class="field"><label>模式</label>
@@ -656,8 +656,8 @@ dialog.sheet-wide{width:min(1000px,94vw)}
     </div>
 
     <div class="card">
-      <div class="card-hd"><h2>发现 triage</h2>
-        <span class="hint">左边选一条，右边看完整的证据链</span></div>
+      <div class="card-hd"><h2>发现与研判</h2>
+        <span class="hint">左侧选择条目，右侧查看完整证据链</span></div>
       <div class="split">
         <div>
           <div class="toolbar">
@@ -672,36 +672,36 @@ dialog.sheet-wide{width:min(1000px,94vw)}
           <div class="evlist" id="scan-evlist"></div>
         </div>
         <div>
-          <div id="scan-evidence" class="note">← 左边点一条发现</div>
+          <div id="scan-evidence" class="note">← 请选择左侧发现条目</div>
         </div>
       </div>
     </div>
 
     <div class="card">
-      <div class="card-hd"><h2>扫描指标</h2><span class="hint">跑完一次扫描后由后端口径算出</span></div>
+      <div class="card-hd"><h2>扫描指标</h2><span class="hint">扫描完成后按统一口径统计</span></div>
       <div class="statcards" id="scan-metrics">
-        <div class="empty"><b>还没有指标</b>先在上方「扫描任务」里点「开始扫描」</div>
+        <div class="empty"><b>暂无指标</b>请先在「扫描任务」中启动一次扫描</div>
       </div>
     </div>
 
     <div class="card">
-      <div class="card-hd"><h2>交叉矩阵热力图</h2><span class="hint">格子越深，这对实现在同一份字节上的分歧越多</span></div>
+      <div class="card-hd"><h2>实现对照矩阵</h2><span class="hint">颜色深度表示该对实现在相同输入上的分歧密度</span></div>
       <div class="scroll-x" id="scan-heatmap">
-        <div class="empty"><b>还没有热力图</b>先跑一次 cross 模式的扫描</div>
+        <div class="empty"><b>暂无数据</b>请先执行一次矩阵（cross 模式）扫描</div>
       </div>
     </div>
   </section>
   </div>
 
   <div class="sect">
-    <div class="sect-hd">验证外部发现 <span class="hint">旧的独立入口，功能已被上面的自动检测覆盖</span></div>
+    <div class="sect-hd">外部发现验证 <span class="hint">以同一套判定引擎复核第三方扫描器的输出</span></div>
   <section class="legacy" id="tab-verify">
     <div class="card">
       <div class="card-hd"><h2>验证外部发现</h2>
-        <span class="hint">确定性内核给结论，不看报告方的自述</span></div>
-      <p class="lead">把别人的命中（nuclei / Burp / HAR / curl / 普通清单）当作<strong>待验证的假设</strong>，
-        用与扫描<strong>完全相同</strong>的差分 + 消融链路去证实或证伪。
-        <strong>结论由确定性内核给出，不看报告方的自述</strong> —— 这就是"做扫描器的裁判"。</p>
+        <span class="hint">结论由确定性判定引擎给出，每条均附判定依据</span></div>
+      <p class="lead">将第三方命中（nuclei / Burp / HAR / curl / 清单）作为<strong>待验证假设</strong>，
+        通过与矩阵扫描<strong>完全一致</strong>的差分与消融链路进行证实或证伪。
+        每条结论均由确定性判定引擎产出，并附完整判定依据。</p>
       <textarea class="paste" id="vfy-text" rows="8"
         placeholder="粘贴一份清单：nuclei 的 JSONL、Burp 的 sitemap XML、HAR、curl 命令行，或每行一条 URL"></textarea>
       <div class="btn-row">
@@ -723,14 +723,13 @@ dialog.sheet-wide{width:min(1000px,94vw)}
   </div>
 
   <div class="sect">
-    <div class="sect-hd">探测文件 <span class="hint">拖一份原始字节，自己指定对比哪一对实现</span></div>
+    <div class="sect-hd">单文件检测 <span class="hint">对单份原始请求字节执行差分，可指定参与对照的实现对</span></div>
   <section class="legacy" id="tab-probe">
     <div class="card">
-      <div class="card-hd"><h2>探测文件</h2><span class="hint">拿抓包导出的原始字节，看两侧理解是否一致 —— <b>不是源码、不是程序、不是压缩包</b>；工具全程黑盒，只读字节流</span></div>
+      <div class="card-hd"><h2>请求字节检测</h2><span class="hint">输入为原始请求字节（如抓包导出），全程黑盒分析；结论附带双侧观测与消融证据</span></div>
       <div class="drop" id="drop">
-        <div class="drop-t">把<b>抓包导出的一条请求</b>拖到这里</div>
-        <div>或点击选择文件 —— 必须是<b>原始字节</b>（抓包导出 .bin/.txt），
-             用记事本另存过会改换行符</div>
+        <div class="drop-t">拖入<b>抓包导出的一条原始请求</b>（.bin / .txt）</div>
+        <div>或点击选择文件；请使用抓包工具导出的原始字节，避免经过会改写换行符的编辑器</div>
         <input type="file" id="file" hidden>
       </div>
       <div id="fileinfo" class="note fileinfo"></div>
@@ -787,7 +786,7 @@ dialog.sheet-wide{width:min(1000px,94vw)}
             <label>max_tokens<input class="input" id="set-llm-tokens"></label>
           </div>
         </fieldset>
-        <fieldset class="set"><legend>自动捕获默认值</legend>
+        <fieldset class="set"><legend>流量接入默认值</legend>
           <label>代理端口<input class="input" id="set-cap-port"></label>
           <label>上游代理（可选；例 127.0.0.1:10090，流量链：浏览器 → 捕获 → 上游）<input class="input" id="set-cap-upstream" placeholder="留空 = 直连"></label>
           <label>记录文件（JSONL；留空 = 只留内存）<input class="input" id="set-cap-jsonl"></label>
@@ -816,13 +815,13 @@ dialog.sheet-wide{width:min(1000px,94vw)}
       <div id="set-err"></div>
 
       <div class="sect">
-        <div class="sect-hd">模型提案台账 <span class="hint">模型只提案、内核只裁决</span></div>
+        <div class="sect-hd">模型提案台账 <span class="hint">模型仅生成候选；准入由确定性实验判定</span></div>
   <section class="legacy" id="tab-ledger">
     <div class="card">
-      <div class="card-hd"><h2>模型提案</h2><span class="hint">提案必须通过差分 oracle 的准入实验才算命中</span></div>
+      <div class="card-hd"><h2>模型提案</h2><span class="hint">每条提案须通过语法校验与差分准入实验方可计入命中</span></div>
       <div id="ledger-status" class="note">模型状态检查中…</div>
       <div class="btn-row">
-        <button class="btn btn-primary" id="propose-go" disabled>让模型提一批新提案</button>
+        <button class="btn btn-primary" id="propose-go" disabled>生成一批模型提案</button>
         <span class="note" id="propose-hint">—</span>
       </div>
       <div id="propose-err"></div>
@@ -835,7 +834,7 @@ dialog.sheet-wide{width:min(1000px,94vw)}
     </div>
 
     <div class="card">
-      <div class="card-hd"><h2>最近提案</h2><span class="hint">(<span id="ledger-count">0</span>) 点一行展开字节</span></div>
+      <div class="card-hd"><h2>最近提案</h2><span class="hint">(<span id="ledger-count">0</span> 条) 选择条目查看原始字节</span></div>
       <div id="ledger-table">
         <div class="skeleton w60"></div><div class="skeleton w80"></div><div class="skeleton w60"></div>
       </div>
@@ -853,8 +852,8 @@ dialog.sheet-wide{width:min(1000px,94vw)}
   <section id="tab-check">
   <section class="legacy">
     <div class="card">
-      <div class="card-hd"><h2>自检</h2><span class="hint">先证明程序能重新挖出已知的，再谈能发现未知的</span></div>
-      <p class="lead">跑一遍已知案例反验证 —— 先证明程序能重新挖出已知的，再谈能发现未知的。</p>
+      <div class="card-hd"><h2>系统自检</h2><span class="hint">引擎有效性回归：对已知案例库全量反验证，确保判定链路可用</span></div>
+      <p class="lead">对已知案例库执行全量反验证：确认判定引擎当前版本可正确重现全部已知语义分歧。</p>
       <div class="btn-row">
         <button class="btn btn-primary" id="runchk">跑自检</button>
       </div>
@@ -862,7 +861,7 @@ dialog.sheet-wide{width:min(1000px,94vw)}
     </div>
   </section>
   <div class="sect">
-    <div class="sect-hd">内置案例库 <span class="hint">47 个已知案例，点开一行看两侧观测与判定</span></div>
+    <div class="sect-hd">案例库 <span class="hint">47 条已知案例；选择条目查看双侧观测与判定依据</span></div>
   <section class="legacy" id="tab-cases">
     <div class="card">
       <div class="card-hd"><h2>已知案例库</h2><span class="hint">(<span id="casecount">0</span> 个)</span></div>
@@ -872,7 +871,7 @@ dialog.sheet-wide{width:min(1000px,94vw)}
             <div class="skeleton w80"></div><div class="skeleton w60"></div><div class="skeleton w80"></div>
           </div>
         </div>
-        <div id="casedetail" class="note">← 点左边一个案例</div>
+        <div id="casedetail" class="note">← 请选择左侧案例</div>
       </div>
     </div>
   </section>
@@ -884,7 +883,7 @@ dialog.sheet-wide{width:min(1000px,94vw)}
 
 <!-- ===== 捕获设置小窗：原生 dialog（ESC / 点背景自动关），元素沿用原 id，逻辑不动 ===== -->
 <dialog class="sheet" id="cap-dlg">
-  <div class="sheet-hd"><h3>自动捕获设置</h3>
+  <div class="sheet-hd"><h3>流量接入参数</h3>
     <button class="x" id="cap-dlg-x" title="关闭（Esc）">✕</button></div>
   <div class="sheet-bd">
     <label class="sheet-row"><span class="k">代理端口</span>
@@ -1305,7 +1304,7 @@ async function loadScanJobs(){
     if (d.error){ box.innerHTML = '<div class="err">' + esc(d.error) + '</div>'; return; }
     const jobs = d.jobs || [];
     $('#jobs-count').textContent = jobs.length;
-    if (!jobs.length){ box.innerHTML = '<div class="note">还没有扫描任务</div>'; return; }
+    if (!jobs.length){ box.innerHTML = '<div class="note">暂无扫描任务</div>'; return; }
     box.innerHTML = '<table><tr><th>任务号</th><th>状态</th><th>用例</th>' +
       '<th>分歧</th><th>安全级</th><th></th></tr>' + jobs.map(j => {
         const c = j.live ? ' class="clickable"' : '';
@@ -1373,15 +1372,15 @@ async function loadScanMetrics(jobId){
     const avg = m.avg_seconds_per_case == null
       ? '—' : esc(String(m.avg_seconds_per_case)) + ' 秒';
     box.innerHTML =
-      metricCard('用例数', iv(m.total_cases), '本次扫描真正喂进去的候选语料条数（含去重后的提案，不含被 limit 裁掉的）') +
-      metricCard('实现对', iv(m.jobs), '本次扫描实际比对的实现组合数（axis 模式下 = 定向轴 + 未覆盖实现的交叉对照）') +
-      metricCard('分歧数', iv(m.divergences), '同一份字节两侧结构理解不一致的条数（判定前的原始差分）') +
+      metricCard('用例数', iv(m.total_cases), '本次扫描实际执行的候选用例数（含去重后的提案）') +
+      metricCard('实现对', iv(m.jobs), '实际比对的实现组合数（axis 模式 = 定向轴 + 未覆盖实现的交叉对照）') +
+      metricCard('分歧数', iv(m.divergences), '同一份字节两侧结构理解不一致的条数（分级判定前的原始差分）') +
       metricCard('安全级', iv(m.security), '分歧中由攻击者可控字节承载、具备安全影响结构性前提的条数') +
-      metricCard('安全占比', metricPct(m.security_share), '安全级 / 分歧数 —— 衡量分歧里有多大比例真的危险') +
-      metricCard('消融定位率', metricPct(m.controllable_rate), '安全级发现里通过消融实验定位到承载字节的比例') +
-      metricCard('唯一化压缩比', metricPct(m.unique_case_ratio), '唯一 case_id 数 / 分歧数 —— 越低说明同一份字节被反复计入，有效发现越少') +
-      metricCard('最小化压缩比', metricPct(m.minimize_ratio), 'Σ最小化后字节数 / Σ原始字节数（只算被最小化的发现）—— 越低代表性越好') +
-      metricCard('单用例平均耗时', avg, '已用时 / 用例数 —— 扫描吞吐；没有用例时不显示');
+      metricCard('安全占比', metricPct(m.security_share), 'security 级发现 / 分歧总数') +
+      metricCard('消融定位率', metricPct(m.controllable_rate), 'security 级发现中通过消融实验定位到承载字节的比例') +
+      metricCard('唯一化压缩比', metricPct(m.unique_case_ratio), '唯一 case_id 数 / 分歧数，反映同一份字节的重复计入程度') +
+      metricCard('最小化压缩比', metricPct(m.minimize_ratio), '最小化后字节数 / 原始字节数（仅统计已最小化发现），数值越低样本越精炼') +
+      metricCard('单用例平均耗时', avg, '总用时 / 用例数，反映扫描吞吐；无用例时不显示');
   } catch (err) {
     box.innerHTML = '<div class="err">' + fetchFailHint(err) + '</div>';
   }
@@ -1503,7 +1502,7 @@ function renderScanEvidence(f){
   const box = $('#scan-evidence');
   if (!f){
     box.className = 'note';
-    box.innerHTML = '← 左边点一条发现';
+    box.innerHTML = '← 请选择左侧发现条目';
     return;
   }
   box.className = '';
@@ -1718,7 +1717,7 @@ async function loadLedger(){
     renderLedgerStats(d.stats);
     const rec = d.recent || [];
     $('#ledger-count').textContent = rec.length;
-    if (!rec.length){ box.innerHTML = '<div class="note">还没有提案记录</div>'; return; }
+    if (!rec.length){ box.innerHTML = '<div class="note">暂无提案记录</div>'; return; }
     box.innerHTML = '<table><tr><th>轴名</th><th>来源</th><th>可编译</th>' +
       '<th>命中</th><th>命中字段</th><th>说明</th></tr>' + rec.map((it, i) => {
         const origin = it.origin === 'llm' ? '模型'
@@ -1946,8 +1945,8 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
     const box = el('dt-list');
     if (!shown.length){
       box.innerHTML = findings.length
-        ? '<div class="empty"><b>当前筛选下没有结果</b>换个筛选条件</div>'
-        : '<div class="empty"><b>还没有结果</b>先在上面点「开始检测」</div>';
+        ? '<div class="empty"><b>当前筛选下没有结果</b>请调整筛选条件</div>'
+        : '<div class="empty"><b>暂无结果</b>请先点击「开始检测」</div>';
       return;
     }
     box.innerHTML = shown.map(f =>
@@ -2013,7 +2012,7 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
     el('dt-err').innerHTML = ''; lines = []; findings = []; lastReport = '';
     checkMangled();
     el('dt-report').textContent = ''; el('dt-list').innerHTML = '';
-    el('dt-evidence').className = 'note'; el('dt-evidence').textContent = '← 左边点一条';
+    el('dt-evidence').className = 'note'; el('dt-evidence').textContent = '← 请选择左侧条目';
     initDag(); renderFindings();
     setChain('running', '运行中'); el('dt-elapsed').textContent = ''; startTicker();
     const body = {text: text};
@@ -2279,12 +2278,12 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
   function renderStats(s){
     if (!s) return;
     box('cap-stats').innerHTML =
-      statCard('请求', s.requests, '代理一共看到多少条请求（含重复）') +
-      statCard('已分析', s.analyzed, '真正跑过差分 oracle 的请求数') +
-      statCard('跳过', s.skipped, '静态资源 / 队列满 / 取不到观测对象') +
-      statCard('HTTPS 隧道', s.tunnels, 'CONNECT 未拆包（未启用本地 CA 解密，或客户端拒绝本地 CA）——里面有两个子类，见各条 skip 说明') +
-      statCard('分歧', s.divergences, '所有已分析请求的分歧总数（跨 5 个领域）') +
-      statCard('安全级请求', s.security_requests, '至少有一条 security 级分歧的请求数');
+      statCard('请求', s.requests, '代理接收的请求总数（含重复）') +
+      statCard('已分析', s.analyzed, '已完成差分检测的请求数') +
+      statCard('跳过', s.skipped, '静态资源 / 分析队列饱和 / 无法提取观测对象') +
+      statCard('HTTPS 隧道', s.tunnels, '未解密的 CONNECT 隧道（未启用本地证书解密，或客户端拒绝本地证书）') +
+      statCard('分歧', s.divergences, '已分析请求的分歧总数（跨 5 个领域）') +
+      statCard('安全级请求', s.security_requests, '存在 security 级分歧的请求数');
   }
   function verdictBadge(r){
     if (r.tunnel) return '<span class="badge">HTTPS 隧道</span>';
@@ -2320,8 +2319,8 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
     const hits = rows.filter(matchesFilter);
     const view = hits.slice(-200);
     list.innerHTML = view.map(rowHtml).join('') ||
-      (rows.length ? '<div class="empty"><b>当前筛选下没有请求</b>换个条件试试</div>'
-                   : '<div class="empty"><b>还没有请求</b>把代理指过来试试</div>');
+      (rows.length ? '<div class="empty"><b>当前筛选下没有请求</b>请调整筛选条件</div>'
+                   : '<div class="empty"><b>暂无请求</b>请确认客户端代理已指向本捕获端口</div>');
     list.querySelectorAll('.evitem').forEach(el => {
       el.onclick = () => {
         const found = rows.find(x => (x.case_id || '') === el.dataset.case);
@@ -2440,7 +2439,7 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
       rows = []; seq = 0; sel = null;
       box('cap-list').innerHTML = '';
       box('cap-evidence').className = 'note';
-      box('cap-evidence').textContent = '← 左边点一条';
+      box('cap-evidence').textContent = '← 请选择左侧条目';
       setCapState('运行中：代理 127.0.0.1:' + d.port + (d.mitm === false
         ? '（HTTPS 未拆包：本解释器缺 cryptography —— pip install cryptography 后重启再开捕获）'
         : '（HTTP 明文 + HTTPS 本地 CA 解密）'));
