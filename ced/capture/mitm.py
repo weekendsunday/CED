@@ -121,7 +121,10 @@ def _ensure_leaf(host: str) -> None:
     ca_key = serialization.load_pem_private_key(CA_KEY.read_bytes(), password=None)
     ca_cert = x509.load_pem_x509_certificate(CA_CERT.read_bytes())
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, host)])
+    # CN 上限 64 字符（x509.NameAttribute 硬限制）；真实 CDN 域名有更长的 ——
+    # CN 只是展示名，域名校验走 SAN（DNSName 无此限制），超长就截断。
+    common_name = host[:64]
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, common_name)])
     now = datetime.datetime.now(datetime.timezone.utc)
     san_names = [x509.DNSName(host)]
     try:
