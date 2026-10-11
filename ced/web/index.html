@@ -2441,7 +2441,9 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
       box('cap-list').innerHTML = '';
       box('cap-evidence').className = 'note';
       box('cap-evidence').textContent = '← 左边点一条';
-      setCapState('运行中：代理 127.0.0.1:' + d.port + '（HTTP 明文；HTTPS 隧道直通）');
+      setCapState('运行中：代理 127.0.0.1:' + d.port + (d.mitm === false
+        ? '（HTTPS 未拆包：本解释器缺 cryptography —— pip install cryptography 后重启再开捕获）'
+        : '（HTTP 明文 + HTTPS 本地 CA 解密）'));
       box('cap-go').disabled = true; box('cap-stop').disabled = false;
       renderStats(d.summary);
       startPolling();

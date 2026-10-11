@@ -86,9 +86,16 @@ class CaptureRunner:
 
     def state(self) -> dict:
         proxy = self.proxy
+        from . import mitm as _mitm_mod
+        base = {"running": proxy is not None}
         if proxy is None:
-            return {"running": False}
+            return {**base, "mitm": _mitm_mod.mitm_available(),
+                    "seq": 0, "summary": {"requests": 0, "analyzed": 0,
+                                          "skipped": 0, "tunnels": 0,
+                                          "security_requests": 0,
+                                          "divergences": 0}}
         return {"running": True, "port": proxy.cfg.port,
+                "mitm": proxy.cfg.mitm and _mitm_mod.mitm_available(),
                 "domains": list(proxy.cfg.domains) if proxy.cfg.domains else [],
                 "analyze_all": proxy.cfg.analyze_all,
                 "jsonl": str(proxy.cfg.jsonl) if proxy.cfg.jsonl else "",
