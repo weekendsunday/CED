@@ -7,7 +7,8 @@
 控制台由三部分组成：
   * 扫描任务   —— POST /api/scan/start + SSE /api/scan/events 实时进度
   * 结果 triage —— /api/scan/result，形状来自 ``report.renderer.result_payload``
-  * 模型解读   —— /api/assist/status + 检测结果里的 interpret 字段（判定仍由内核给）
+  * 模型解读   —— /api/assist/status + 判定结果里的 interpret 字段（判定仍由内核给）；
+                手动检测挂在发现上，流量接入挂在记录上（/api/capture/interpretations）
 
 SSE 与页面都不用任何第三方库：事件流是手写的 ``text/event-stream``。
 """
@@ -30,6 +31,8 @@ from .. import settings as app_settings
 from ..adapters import ADAPTERS
 from ..adapters import get as get_adapter
 from ..analysis import analyze
+from ..capture import mitm as capture_mitm
+from ..capture import trust as capture_trust
 from ..capture.web import CaptureRunner
 from ..contracts import ImplSpec
 from ..impls import reference
@@ -50,6 +53,8 @@ _ASSETS = {
 DEFAULT_PORT = 8777
 #: 扫描用例上限：语料是"轴 × 定向变异"，上千条已足够，再多只是重复
 MAX_CASES = 5000
+#: 单条输入的字节上限 —— 本工具面向单条请求，不是整个流量包（前端 MAX_BYTES 同口径）
+MAX_PAYLOAD = 1 << 20
 #: SSE 空闲心跳间隔（秒）—— 没有新事件时也往连接上写一个注释行，防空闲超时
 SSE_WAIT = 20.0
 
@@ -109,6 +114,17 @@ def _domains_info() -> dict:
         except KeyError:
             items.append({"name": name, "impls": 0, "pairs": 0})
     return {"domains": sorted(items, key=lambda d: d["name"])}
+
+
+def _decode_upload(value) -> tuple[bytes, str]:
+    """把界面上传上来的 base64 解成字节。返回 (数据, 错误消息) —— 只认内容，不认路径。"""
+    try:
+        data = base64.b64decode(str(value or ""), validate=True)
+    except Exception as exc:             # noqa: BLE001 —— 解不开就照实说
+        return b"", f"上传内容不是合法 base64（多半是文件没读完或选错了，重选一次试试）：{exc}"
+    if not data:
+        return b"", "没有收到文件内容"
+    return data, ""
 
 
 def _case_brief(spec: dict) -> dict:
@@ -226,13 +242,11 @@ class Handler(BaseHTTPRequestHandler):
         query = parse_qs(url.query)
 
         if url.path in ("/", "/index.html"):
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            # 前端单页迭代频繁：绝不缓存，否则升级后浏览器还端着旧页面
-            self.send_header("Cache-Control", "no-store")
-            self.end_headers()
-            self.wfile.write((STATIC / "index.html").read_bytes())
-            return
+            # 走 _send 而不是手写响应头：HTTP/1.1 keep-alive 下不给 Content-Length，
+            # 浏览器不知道响应到哪儿结束，整个页面会一直转圈。_send 顺带带上
+            # no-store（前端迭代频繁，缓存会让人端着旧页面）。
+            return self._send((STATIC / "index.html").read_bytes(),
+                              "text/html; charset=utf-8")
         if url.path in _ASSETS:
             return self._asset(url.path)
         if url.path == "/api/health":
@@ -260,14 +274,30 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(_assist_status())
         if url.path == "/api/capture/state":
             return self._json(CAPTURE.state())
+        if url.path == "/api/capture/ca/status":
+            return self._json(capture_trust.status())
+        if url.path == "/api/capture/ca":
+            return self._ca_download()
+        if url.path == "/api/capture/interpretations":
+            return self._json(CAPTURE.interpretations(
+                session=(query.get("session") or [None])[0]))
         if url.path == "/api/capture/records":
             try:
                 since = int((query.get("since") or ["0"])[0])
             except ValueError:
                 since = 0
-            return self._json(CAPTURE.records(since))
+            try:
+                limit = int((query.get("limit") or ["300"])[0])
+            except ValueError:
+                limit = 300
+            return self._json(CAPTURE.records(
+                since, max(1, min(limit, 5000)),
+                session=(query.get("session") or [None])[0]))
         if url.path == "/api/capture/record":
-            return self._json(CAPTURE.record((query.get("case_id") or [""])[0]))
+            return self._json(CAPTURE.record((query.get("case_id") or [""])[0],
+                                             session=(query.get("session") or [None])[0]))
+        if url.path == "/api/capture/sessions":
+            return self._json(CAPTURE.sessions())
         if url.path == "/api/detect/stages":
             return self._json({"stages": list(detect_entry.STAGES)})
         if url.path == "/api/detect/events":
@@ -322,9 +352,26 @@ class Handler(BaseHTTPRequestHandler):
             return self._capture_start(body)
         if url.path == "/api/capture/stop":
             return self._json(CAPTURE.stop())
+        if url.path == "/api/capture/ca/trust":
+            return self._ca_trust(body)
+        if url.path == "/api/capture/ca/import":
+            return self._ca_import(body)
+        if url.path == "/api/capture/ca/purge":
+            return self._json({"ok": True, **capture_mitm.purge_leaves()})
         if url.path == "/api/capture/poc":
-            result = CAPTURE.poc(str(body.get("case_id") or ""))
+            result = CAPTURE.poc(str(body.get("case_id") or ""),
+                                 session=str(body.get("session") or "") or None)
             return self._json(result, 200 if result.get("ok") else 400)
+        if url.path == "/api/capture/forget":
+            try:
+                seq = int(body.get("seq"))
+            except (TypeError, ValueError):
+                return self._json({"error": "删哪一条得给 seq（列表里那条记录的序号）"}, 400)
+            return self._json(CAPTURE.forget(seq))
+        if url.path == "/api/capture/forget_all":
+            return self._json(CAPTURE.forget_all())
+        if url.path == "/api/capture/session/forget":
+            return self._json(CAPTURE.forget_session(str(body.get("id") or "")))
         if url.path == "/api/detect":
             return self._detect_start(body)
         if url.path == "/api/settings":
@@ -340,6 +387,13 @@ class Handler(BaseHTTPRequestHandler):
         if not isinstance(text, str) or not text.strip():
             return self._json({"error": "输入是空的 —— 粘一条 HTTP 请求，"
                                         "或一份 nuclei / Burp / HAR / curl / URL 清单"}, 400)
+        # 「选择文件」是前端按 latin-1 逐字节转成文本送来的（一个字节正好一个字符），
+        # 所以字符数就是字节数；粘贴进来的文本也按同一口径数 —— 它只用来拦住"整个
+        # 流量包"级别的输入，不必精确到字节。前端 MAX_BYTES 只是提前报人话。
+        if len(text) > MAX_PAYLOAD:
+            return self._json(
+                {"error": f"输入太大（{len(text)} 字节 > {MAX_PAYLOAD}）——"
+                          f"本工具面向单条请求，不是整个流量包：请先从抓包里切出目标请求"}, 400)
         domains = body.get("domains") or None
         if isinstance(domains, str):
             domains = [item.strip() for item in domains.split(",") if item.strip()]
@@ -378,6 +432,68 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"error": str(exc)}, 400)
         return self._json({"ok": True, "settings": app_settings.public_view(saved)})
 
+    def _ca_download(self) -> None:
+        """把 CA 证书原样发给浏览器（双击即走系统安装向导）。
+
+        「一键信任」失败、或所在平台没有一键入口时，这是兜底路径 —— 所以依赖没装
+        要如实报错，不能甩一个空文件（空文件双击只会让人更迷惑）。
+        """
+        if not capture_mitm.mitm_available():
+            return self._json({"error": "本解释器缺可选依赖 cryptography，生成不了本地 CA"}, 409)
+        try:
+            ca = capture_mitm.ensure_ca()
+        except Exception as exc:
+            return self._json({"error": f"生成本地 CA 失败：{exc}"}, 500)
+        body = Path(ca).read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/x-x509-ca-cert")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Content-Disposition", 'attachment; filename="ced-capture-ca.crt"')
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _ca_trust(self, body: dict) -> None:
+        """导入 / 撤销本机信任库。**必须先 confirm**。
+
+        为什么强制确认：这是一条本机 HTTP 接口，普通表单 POST 不需要预检就能打进来；
+        没有这道闸，任意网页都能把「本机信任一张证书」变成静默副作用。
+        """
+        if body.get("confirm") is not True:
+            return self._json({"error": "缺 confirm：改本机信任库要先在界面上确认"}, 400)
+        result = capture_trust.apply(undo=bool(body.get("undo")))
+        return self._json(result, 200 if result.get("ok") else 400)
+
+    def _ca_import(self, body: dict) -> None:
+        """导入一张**带私钥的 CA**（团队 / 单位共用一张被授权的 CA 时用这条）。
+
+        与「一键信任」同一条规矩：**必须先 confirm** —— 这是本机接口，副作用
+        （换掉本机的解密 CA）要有人明确点头。
+
+        收的是**文件内容本身**（base64），不是本机路径：服务端不去读调用方给的
+        路径，否则这条接口就成了任意文件读取。
+        """
+        if body.get("confirm") is not True:
+            return self._json({"error": "缺 confirm：换本机 CA 要先在界面上确认"}, 400)
+        blob, error = _decode_upload(body.get("cert_b64"))
+        if error:
+            return self._json({"ok": False, "error": error}, 400)
+        key_blob = None
+        if body.get("key_b64"):
+            key_blob, error = _decode_upload(body.get("key_b64"))
+            if error:
+                return self._json({"ok": False, "error": "私钥文件：" + error}, 400)
+        try:
+            result = capture_mitm.import_ca(
+                blob, key_blob, password=str(body.get("password") or "") or None,
+                replace=bool(body.get("replace")))
+        except ValueError as exc:            # 缺私钥 / 不是 CA / 不是一对 / 要确认替换
+            return self._json({"ok": False, "error": str(exc)}, 400)
+        except Exception as exc:             # noqa: BLE001 —— 意外也如实回给界面
+            return self._json({"ok": False,
+                               "error": f"导入失败：{type(exc).__name__}: {exc}"}, 400)
+        return self._json(result)
+
     def _capture_start(self, body: dict) -> None:
         """起自动捕获。端口被占 / 领域写错都要**当场**说清楚，不留给后台线程。
 
@@ -400,14 +516,23 @@ class Handler(BaseHTTPRequestHandler):
         analyze_all = body.get("analyze_all")
         if analyze_all is None:
             analyze_all = bool(saved.get("analyze_all"))
+        interpret = body.get("interpret")
+        if interpret is None:
+            # 「使用模型解读」是**一个**开关：手动检测与流量接入共用同一份默认值
+            interpret = bool(app_settings.load()["detect"]["interpret"])
         jsonl = body.get("jsonl") or saved.get("jsonl") or None
         upstream = (str(body.get("upstream") or saved.get("upstream") or "").strip()
                     or None)
         if upstream and upstream.count(":") != 1:
             return self._json({"error": "上游代理要写成 HOST:PORT（例 127.0.0.1:10090）"}, 400)
+        # 解读层在**起捕获这一刻**定下来：模型没配好就回落成"不解读"，并且如实告知
+        interpreter = _make_interpreter() if interpret else None
         result = CAPTURE.start(port=port, domains=domains or None,
                                analyze_all=bool(analyze_all), jsonl=jsonl,
-                               upstream=upstream)
+                               upstream=upstream, interpreter=interpreter)
+        if result.get("ok") and interpret and interpreter is None:
+            result["interpret_note"] = ("勾了「使用模型解读」，但模型没配好 —— "
+                                        "捕获照跑，只是这次没有解读")
         return self._json(result, 200 if result.get("ok") else 400)
 
     # ----------------------------------------------------------------- 业务

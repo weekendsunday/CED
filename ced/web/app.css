@@ -402,6 +402,7 @@ tr.prop-detail td{background:var(--surface-2)}
   background:var(--surface);border:1px solid var(--line);border-radius:var(--r2);
 }
 .evitem,.caseitem{
+  position:relative;
   padding:12px var(--s4);border-bottom:1px solid var(--line);
   border-left:3px solid transparent;cursor:pointer;
   transition:background .12s,border-color .12s;
@@ -411,6 +412,23 @@ tr.prop-detail td{background:var(--surface-2)}
 .evitem.sel,.evitem.active,.caseitem.sel{background:var(--accent-soft);border-left-color:var(--accent)}
 .evitem .id,.caseitem .id{font-weight:600;font-size:var(--fs-2);overflow-wrap:anywhere}
 .evitem .meta,.caseitem .meta{color:var(--ink-3);font-size:var(--fs-1);overflow-wrap:anywhere}
+/* 行尾的删除键：平时不显形（列表的主体是数据，不是一排按钮），指到这一行才出来。
+   它是绝对定位贴行尾的，所以带它的那几行要自己留出右边的位置（见下面 #cap-list）。 */
+.evitem .rowdel,.side-item .rowdel{
+  display:grid;place-items:center;width:24px;height:24px;flex:0 0 auto;
+  font:inherit;font-size:12px;line-height:1;
+  border-radius:999px;border:1px solid transparent;background:transparent;
+  color:var(--ink-3);cursor:pointer;opacity:0;
+  transition:opacity .12s,background .12s,border-color .12s,color .12s;
+}
+.evitem .rowdel{position:absolute;top:9px;right:10px}
+#cap-list .evitem{padding-right:40px}
+.evitem:hover .rowdel,.evitem:focus-within .rowdel,
+.side-item:hover .rowdel,.side-item:focus-within .rowdel{opacity:1}
+.evitem .rowdel:hover,.side-item .rowdel:hover{
+  background:var(--bad-soft);border-color:var(--bad-line);color:var(--bad)}
+.evitem .rowdel:focus-visible,.side-item .rowdel:focus-visible{
+  opacity:1;outline:none;border-color:var(--bad-line);color:var(--bad)}
 .log{
   max-height:190px;overflow:auto;margin-top:var(--s2);padding:var(--s2) var(--s3);
   background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r2);
@@ -529,13 +547,37 @@ details.sect[open]>summary{border-bottom:1px solid var(--line)}
 .side-item:hover{background:var(--surface-2)}
 .side-item.sel{background:var(--accent-soft);box-shadow:inset 0 0 0 1px var(--accent-line)}
 .side-item .t{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:var(--fs-2)}
-.side-item .badge{flex:0 0 auto;font-size:var(--fs-1)}
 .side-empty{color:var(--ink-3);font-size:var(--fs-2);padding:10px 8px;line-height:1.7}
 
 /* 捕获空态：虚线框占满整行，右侧提示列隐藏 */
 #mode-capture .split:has(.evlist .empty){grid-template-columns:1fr}
 #mode-capture .split:has(.evlist .empty)>div:last-child{display:none}
 #cap-stats:empty{display:none}
+
+/* 回看历史会话：一行提示要"显眼但不抢戏" —— 用分区灰底说清中栏摆的不是当前那次，
+   右边紧随一条回程。整行是可点的提示条，不塞进统计卡片里。 */
+.hist-bar{
+  display:flex;align-items:center;justify-content:space-between;gap:12px;
+  background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r2);
+  padding:8px 12px;margin:0 0 var(--s2);
+}
+.hist-bar .note{margin:0}
+
+/* 证书一行：徽章与动作按钮同排对齐；说明与手动指引各占一行 —— 长文本不挤按钮宽度。
+   .card>.toolbar+.toolbar 本来会把这排往上提，这里显式摆平，免得看起来像贴错了位置。 */
+.card>.toolbar.ca-row{margin-top:0;margin-bottom:var(--s2)}
+.ca-row .badge{min-width:64px;text-align:center}
+.ca-note{margin:0 0 var(--s2);white-space:pre-line}
+.ca-note:empty,#ca-err:empty,#ca-hint[hidden]{display:none}
+#ca-err:not(:empty){margin-bottom:var(--s3)}
+.ca-hint{
+  margin:0 0 var(--s3);padding:10px var(--s3);border-radius:var(--r1);
+  border:1px solid var(--line-2);background:var(--surface-2);color:var(--ink-2);
+  font-family:var(--mono);font-size:12px;line-height:1.7;
+  white-space:pre-wrap;overflow-wrap:anywhere;
+}
+.badge-ok{background:var(--good-soft);border-color:var(--good-line);color:var(--good)}
+.badge-warn{background:var(--warn-soft);border-color:var(--warn-line);color:var(--warn)}
 
 /* ==========================================================================
    17b. 折叠区（实验流程 / 实验报告）与模型解读
@@ -635,6 +677,28 @@ dialog.sheet-wide{width:min(1000px,94vw)}
 .settings-grid .input,.settings-grid .select{width:100%;margin-top:4px}
 .settings-grid .form-row-3 label{margin:0}
 
+/* 导入 CA 小窗：文件框沿用 .input 的外壳，把原生的「选择文件」按钮收拾成同一种圆角按钮。
+   两条伪元素分开写：选择器表里混进浏览器不认识的伪元素会让整条规则作废。 */
+#ca-dlg input[type=file]{padding:6px 10px;font-size:var(--fs-1);color:var(--ink-2);cursor:pointer}
+#ca-dlg input[type=file]::file-selector-button{
+  font:inherit;font-size:var(--fs-1);margin-right:10px;padding:5px 14px;
+  border:1px solid var(--line-2);border-radius:var(--r-pill);
+  background:var(--surface-2);color:var(--ink);cursor:pointer;
+  transition:background .15s,border-color .15s;
+}
+#ca-dlg input[type=file]::-webkit-file-upload-button{
+  font:inherit;font-size:var(--fs-1);margin-right:10px;padding:5px 14px;
+  border:1px solid var(--line-2);border-radius:var(--r-pill);
+  background:var(--surface-2);color:var(--ink);cursor:pointer;
+  transition:background .15s,border-color .15s;
+}
+#ca-dlg input[type=file]::file-selector-button:hover{
+  background:var(--surface-3);border-color:var(--ink-3);
+}
+#ca-dlg input[type=file]::-webkit-file-upload-button:hover{
+  background:var(--surface-3);border-color:var(--ink-3);
+}
+
 /* ==========================================================================
    19. 响应式
    ========================================================================== */
@@ -674,6 +738,10 @@ dialog.sheet-wide{width:min(1000px,94vw)}
 @media (max-width:560px){
   .form-row-5,.form-row-3{grid-template-columns:minmax(0,1fr)}
   .card{padding:18px 16px}
+}
+/* 触屏没有 hover：删除键得常显，否则它永远出不来 */
+@media (hover:none){
+  .evitem .rowdel,.side-item .rowdel{opacity:1}
 }
 
 /* ==========================================================================

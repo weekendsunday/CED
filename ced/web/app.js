@@ -2,18 +2,25 @@ const $ = s => document.querySelector(s);
 const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
 /* ---------- 公共小工具 ---------- */
-/** 服务端单条请求上限（ced/web/server.py 的 MAX_PAYLOAD）。
-/** 单条请求的字节上限（与服务端同一个口径）。
+/** 单条输入的字节上限（与服务端 ced/web/server.py 的 MAX_PAYLOAD 同口径）。
     放前端只为**早点报人话**：几十 MB 的文件没必要先读进内存，再被服务端礼貌拒绝。
     判定权仍在服务端，这里只是提前拦。 */
+const MAX_BYTES = 1 << 20;      // 1 MB —— 本工具面向单条请求，不是整个流量包
 const fmtBytes = n => n < 1024 ? n + ' B'
   : n < 1048576 ? (n / 1024).toFixed(1) + ' KB'
   : (n / 1048576).toFixed(1) + ' MB';
 function tooBig(file){
   if (!file || file.size <= MAX_BYTES) return '';
   return '这个文件 ' + fmtBytes(file.size) + '，超过上限 ' + fmtBytes(MAX_BYTES)
-       + '。本工具面向**单条请求**，不是整个流量包：请先从抓包里切出目标请求再拖进来。';
+       + '。本工具面向单条请求，不是整个流量包：请先从抓包里切出目标请求再拖进来。';
 }
+/** 会话的时间标签（服务端给的是 unix 秒）。侧栏那一行与回看提示共用它，
+    两处各写一遍迟早会出现"这边显示 14:32、那边 14:33"这种对不上的事。 */
+const hhmm = ts => {
+  const d = new Date(ts * 1000);
+  return String(d.getHours()).padStart(2, '0') + ':'
+       + String(d.getMinutes()).padStart(2, '0');
+};
 
 /* ---------- 载入领域（矩阵扫描面板用） ---------- */
 let DOMAINS = [];
@@ -592,8 +599,41 @@ function renderScanEvidence(f){
   box.innerHTML = h;
 }
 
+/* ================= 「使用模型解读」开关（三处同一个） =================
+   它出现在三个地方：手动检测面板、设置页、捕获参数小窗 —— 说的都是同一件事，
+   所以永远同步显示同一个状态。以前三处各读各的：改了一处另两处纹丝不动，
+   看起来就像"没生效"。落盘只发生在设置页的「保存」和捕获小窗的「存为默认」。 */
+const LLM_SWITCH_IDS = ['dt-llm', 'set-detect-llm', 'cap-llm'];
+function llmSwitch(checked){
+  LLM_SWITCH_IDS.forEach(id => {
+    const node = document.getElementById(id);
+    if (node && node.checked !== checked) node.checked = checked;
+  });
+}
+LLM_SWITCH_IDS.forEach(id => {
+  const node = document.getElementById(id);
+  if (!node) return;
+  node.addEventListener('change', () => {
+    llmSwitch(node.checked);
+    if (window.refreshCapSummary) window.refreshCapSummary();   // 捕获那一行摘要跟着变
+  });
+});
+
 /* ================= 模型状态 ================= */
 let assistAvailable = false;
+
+/* 没配模型时：检测页 / 捕获页那两个勾选框置灰（勾了也不会生效），但设置页那个
+   保持可点 —— 它本来就是"填完模型顺手定默认值"的地方。 */
+function applyAssistAvailability(ok){
+  const tip = ok ? '检测 / 捕获完成后让模型把证据翻译成人话；判定字段不受影响'
+                 : '未配置模型（在「设置…」里填 base_url 与 model 后可用）；不影响检测与捕获本身';
+  ['dt-llm', 'cap-llm'].forEach(id => {
+    const node = document.getElementById(id);
+    if (!node) return;
+    node.disabled = !ok;
+    if (node.parentElement) node.parentElement.title = tip;
+  });
+}
 
 /* 侧栏左下角显示模型状态 —— 解读依赖它，别让人跑完才发现没配 */
 function setAssistLine(html){
@@ -606,20 +646,13 @@ async function loadAssistStatus(){
     const res = await fetch('/api/assist/status');
     const d = await res.json();
     assistAvailable = !!d.available;
-    const dtLlm = $('#dt-llm');          // 注意：这里的 el() 是另一个闭包里的，用 $ 取
-    if (dtLlm){
-      dtLlm.disabled = !assistAvailable;      // 没配模型就别让人勾了个永远不生效的框
-      dtLlm.parentElement.title = assistAvailable
-        ? '检测完成后让模型把证据翻译成人话；判定字段不受影响'
-        : '未配置模型（在「设置…」里填 base_url 与 model 后可用）；不影响检测本身';
-    }
+    applyAssistAvailability(assistAvailable);
     setAssistLine(assistAvailable
       ? '<b>' + esc(d.model || '模型已配置') + '</b>｜可用'
       : '<span class="warn">模型未配置</span>');
   } catch (err) {
     assistAvailable = false;
-    const dtLlm = $('#dt-llm');
-    if (dtLlm) dtLlm.disabled = true;
+    applyAssistAvailability(false);
     setAssistLine('<span class="warn">模型状态检查失败</span>');
   }
 }
@@ -1046,6 +1079,7 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
     el('set-cap-upstream').value = s.capture.upstream || '';
     el('set-cap-jsonl').value = s.capture.jsonl || '';
     el('set-cap-all').checked = !!s.capture.analyze_all;
+    el('cap-llm').checked = !!(s.detect && s.detect.interpret);   // 与检测页 / 设置页同一个开关
     el('set-scan-domain').value = s.scan.domain;
     el('set-scan-mode').value = s.scan.mode;
     el('set-scan-limit').value = s.scan.limit;
@@ -1069,6 +1103,7 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
     el('cap-default-hint').textContent = '默认值：端口 ' + s.capture.port
       + '，领域 ' + ((s.capture.domains || []).join(' / ') || '全部 5 个')
       + '，静态资源 ' + (s.capture.analyze_all ? '也分析' : '跳过')
+      + '，模型解读 ' + (s.detect && s.detect.interpret ? '开' : '关')
       + (s.capture.jsonl ? ('，记录写 ' + s.capture.jsonl) : '，不写记录文件');
   }
   el('cap-save-default').onclick = async () => {
@@ -1078,7 +1113,9 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
                                analyze_all: el('cap-all').checked,
                                jsonl: jsonl,
                                upstream: el('cap-upstream').value.trim(),
-                               domains: dom ? [dom] : []}};
+                               domains: dom ? [dom] : []},
+                     // 「使用模型解读」是共用的一个开关：这里存的就是它
+                     detect: {interpret: el('cap-llm').checked}};
     try {
       const resp = await fetch('/api/settings', {method: 'POST',
         headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)});
@@ -1142,6 +1179,11 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
 (function(){
   const box = id => document.getElementById(id);
   let seq = 0, timer = null, rows = [], sel = null;
+  let capInterpret = false;                 // 本次接入有没有开模型解读（起捕获那一刻定）
+  let lastInterpStats = {};                 // 最近一次解读统计（清空列表后摆回空态用）
+  let sessions = [];                        // 会话清单：正在跑的那次 + 最近几次已结束的
+  let viewId = null, viewRows = null;       // 正在回看哪一次（null = 看当前那次）
+  let liveSummary = null;                   // 当前那次的统计（回看历史时别把它丢掉）
 
   function statCard(label, value, hint){
     return `<div class="statcard" title="${esc(hint)}"><div class="v">${value}</div><div class="k">${esc(label)}</div></div>`;
@@ -1165,7 +1207,7 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
     if (a.divergences) return '<span class="badge unknown">疑点 ' + a.divergences + '</span>';
     return '<span class="badge compatibility">已检测·一致</span>';
   }
-  function rowHtml(r){
+  function rowHtml(r, canDelete){
     const times = r.count > 1 ? ` <span class="badge" title="同一份字节又来了">×${r.count}</span>` : '';
     const extra = r.tunnel ? '（未拆包）'
                 : (r.skip ? esc(r.skip) : (r.elapsed_ms == null ? '分析中…' : r.elapsed_ms + 'ms'));
@@ -1173,6 +1215,8 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
     return `<div class="evitem${active}" data-case="${esc(r.case_id || '')}">
       <div class="id">${esc(r.method)} ${esc(r.host)}${esc(r.path || '')}${times}</div>
       <div class="meta">${verdictBadge(r)}　${extra}</div>
+      ${canDelete ? `<button type="button" class="rowdel" data-del="${r.seq}"
+        title="从列表移除这条（JSONL 台账里的原始字节不动）" aria-label="删除这条记录">✕</button>` : ''}
     </div>`;
   }
   function matchesFilter(r){
@@ -1185,29 +1229,100 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
     return [r.method, r.host, r.path, r.target].map(
       v => String(v == null ? '' : v).toLowerCase()).join(' ').indexOf(query) >= 0;
   }
+  /* 回看历史会话时列表是**定格**的：它在快照里，删它没有意义 ——
+     要让这次会话从侧栏消失，去删那一行会话。 */
+  function shownRows(){ return viewRows || rows; }
   function renderList(){
-    window.__capRows = rows;                 // 供工作区侧栏（检测历史）读取
-    if (window.__sideSync) window.__sideSync();
     const list = box('cap-list');
-    const hits = rows.filter(matchesFilter);
+    const live = !viewRows;
+    const source = shownRows();
+    const hits = source.filter(matchesFilter);
     const view = hits.slice(-200);
-    list.innerHTML = view.map(rowHtml).join('') ||
-      (rows.length ? '<div class="empty"><b>当前筛选下没有请求</b>请调整筛选条件</div>'
-                   : '<div class="empty"><b>暂无请求</b>请确认客户端代理已指向本捕获端口</div>');
+    list.innerHTML = view.map(r => rowHtml(r, live)).join('') ||
+      (source.length ? '<div class="empty"><b>当前筛选下没有请求</b>请调整筛选条件</div>'
+                     : (live ? '<div class="empty"><b>暂无请求</b>请确认客户端代理已指向本捕获端口</div>'
+                             : '<div class="empty"><b>这次会话没有留下记录</b></div>'));
     list.querySelectorAll('.evitem').forEach(el => {
-      el.onclick = () => {
-        const found = rows.find(x => (x.case_id || '') === el.dataset.case);
-        if (!found) return;
-        sel = found;
-        list.querySelectorAll('.evitem').forEach(x => x.classList.remove('sel'));
-        el.classList.add('sel');
-        detail(found.case_id);
-      };
+      el.onclick = () => selectCase(el.dataset.case);
     });
+    list.querySelectorAll('.rowdel').forEach(btn => {
+      // 删除键在行里：不拦住冒泡的话，点它等于"先删掉、再选中一条不存在的记录"
+      btn.onclick = ev => { ev.stopPropagation(); forget(parseInt(btn.dataset.del, 10)); };
+    });
+    box('cap-clear').disabled = !live || !rows.length;   // 空列表 / 回看快照时都没什么可清的
     box('cap-count').textContent =
-      (hits.length === rows.length ? '' : hits.length + ' / ') + rows.length + ' 条'
+      (hits.length === source.length ? '' : hits.length + ' / ') + source.length + ' 条'
       + (hits.length > view.length ? '（只显示最近 200 条；完整记录在 JSONL 里）' : '');
-    if (window.__sideSync) window.__sideSync();   // 侧栏（检测历史）跟着刷新
+  }
+  /* 选中一条：列表与「模型解读」面板都走这里，两边的高亮与证据面板才不会各说各话 */
+  function selectCase(caseId){
+    const found = shownRows().find(x => (x.case_id || '') === caseId);
+    if (!found) return;
+    sel = found;
+    const list = box('cap-list');
+    list.querySelectorAll('.evitem').forEach(x =>
+      x.classList.toggle('sel', x.dataset.case === caseId));
+    const node = list.querySelector('.evitem.sel');
+    if (node && node.scrollIntoView) node.scrollIntoView({block: 'nearest'});
+    detail(caseId);
+  }
+
+  /* ---- 删记录 ----
+     删的是**网页这份列表**：JSONL 台账是留证用的，那份记录一个字节都不动
+     （界面上也这么写，免得有人以为删了就等于销毁了证据）。
+     定位用 seq 而不是 case_id：HTTPS 隧道那条根本没有 case_id，同一条字节重复出现时
+     多条记录也共用一个 case_id —— 只有 seq 是每条记录唯一的。 */
+  const ZERO_STATS = {requests: 0, analyzed: 0, skipped: 0, tunnels: 0,
+                      security_requests: 0, divergences: 0};
+  async function postForget(path, payload){
+    box('cap-err').innerHTML = '';
+    try {
+      const d = await (await fetch(path, {method:'POST',
+        headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)})).json();
+      // 捕获没在跑时服务端没有统计可给：这时只有列表真的空了才把卡片归零 ——
+      // 删一条就把剩下那些行的数字一起抹平，那是假的
+      if (d.summary) renderStats(d.summary);
+      else if (!rows.length) renderStats(ZERO_STATS);
+      if (d.error){          // 服务端没删成（例如服务端还是旧版本）也要说清楚，不许静默
+        box('cap-err').innerHTML = '<div class="alert alert-warn">页面上已经删掉了，'
+          + '但服务端没有记下这次删除：' + esc(d.error) + '（重启界面服务后再试）</div>';
+      }
+    } catch(err){
+      box('cap-err').innerHTML = '<div class="alert alert-warn">页面上已经删掉了，'
+        + '但服务端没连上，这次删除没记下：' + esc(fetchFailText(err)) + '</div>';
+    }
+  }
+  function forgetInterp(caseId){
+    // 解读面板里跟这条对应的那张卡（模型比内核慢，删的时候它可能正挂在上面）
+    box('cap-interp-body').querySelectorAll('.interp-item').forEach(node => {
+      if (node.dataset.case === caseId) node.remove();
+    });
+  }
+  function forget(seq){
+    const gone = rows.find(r => r.seq === seq);
+    if (!gone) return;
+    rows = rows.filter(r => r.seq !== seq);
+    if (gone.case_id) forgetInterp(gone.case_id);
+    if (sel && sel.seq === seq){
+      sel = null;
+      box('cap-evidence').className = 'note';
+      box('cap-evidence').textContent = '← 请选择左侧条目';
+    }
+    renderList();
+    postForget('/api/capture/forget', {seq: seq});
+  }
+  function forgetAll(){
+    if (!rows.length) return;
+    if (!window.confirm('清空网页上的这份列表？\n\n'
+        + '只是清掉这份列表：开了「记录到文件」时，JSONL 台账里的原始记录一条都不会动。')) return;
+    rows = []; sel = null;
+    // seq 是跟服务端对齐的游标，不回退：回退会把刚清掉的记录又拉回来
+    box('cap-evidence').className = 'note';
+    box('cap-evidence').textContent = '← 请选择左侧条目';
+    // 解读面板跟着一起清（空态文案与轮询里那句是同一条，不在这里另抄一份）
+    renderInterp({items: [], stats: lastInterpStats});
+    renderList();
+    postForget('/api/capture/forget_all', {});
   }
   function evHtml(d){
     let h = `<div class="kv"><span class="k">请求</span>${esc(d.method)} ${esc(d.host)}${esc(d.path || '')}</div>`;
@@ -1242,18 +1357,37 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
     } else if (a){
       h += `<div class="note">这条请求在 5 个领域里都没有分歧 —— 按口径不生成 PoC。</div>`;
     }
+    /* 模型解读：与手动检测那边同一套口径 —— 明确标注"非判定"，判定字段一概不碰 */
+    const itp = d.interpret;
+    if (itp && itp.ok){
+      h += `<div class="sect"><div class="note"><b>模型解读（非判定）</b>
+        <span class="hint">${esc(itp.model || '模型')} 把已有证据翻译成人话，仅供参考</span></div>
+        <div class="clue">
+          <div class="kv"><span class="k">影响</span>${esc(itp.impact || '—')}</div>`
+        + (itp.cwe_hint ? `<div class="kv"><span class="k">CWE 建议</span>${esc(itp.cwe_hint)}</div>` : '')
+        + (itp.fix ? `<div class="kv"><span class="k">修复建议</span>${esc(itp.fix)}</div>` : '')
+        + `<div class="note">上面是<b>模型的转述</b>，不是判定 —— 级别、CWE、证据仍以上面内核给出的为准。</div>
+        </div></div>`;
+    } else if (itp && itp.error){
+      h += `<div class="sect"><div class="note"><b>模型解读</b>
+        <span class="hint">未产出：${esc(itp.error)}　（不影响上面的判定）</span></div></div>`;
+    } else if (capInterpret && top){
+      h += `<div class="sect"><div class="note"><b>模型解读</b>
+        <span class="hint">转述中…（模型比内核慢，下一两次轮询就会补上）</span></div></div>`;
+    }
     h += `<div class="sect"><div class="note"><b>留证的原始字节</b>（客户端原样发的字节）</div>
       <pre>${esc(d.raw_preview || '（已裁剪）')}</pre></div>`;
     return h;
   }
   async function detail(caseId){
-    window.__capDetail = detail;            // 工作区侧栏点击时复用
     const ev = box('cap-evidence');
     if (!caseId){ ev.className = 'note'; ev.textContent = '这条是 HTTPS 隧道（未拆包），没有证据可看'; return; }
     ev.className = '';
     ev.innerHTML = '<div class="note">加载中…</div>';
     try {
-      const d = await (await fetch('/api/capture/record?case_id=' + encodeURIComponent(caseId))).json();
+      // 回看历史会话时证据也要从**那次会话**里取：当前那份列表里已经没有它了
+      const d = await (await fetch('/api/capture/record?case_id=' + encodeURIComponent(caseId)
+        + (viewId ? '&session=' + encodeURIComponent(viewId) : ''))).json();
       if (d.error){ ev.className = 'note'; ev.textContent = d.error; return; }
       ev.innerHTML = evHtml(d);
       const btn = box('cap-poc');
@@ -1263,9 +1397,11 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
   async function poc(caseId){
     const out = box('cap-poc-out'); const body = box('cap-poc-body');
     out.textContent = '生成中…';
+    const payload = {case_id: caseId};
+    if (viewId) payload.session = viewId;
     try {
       const d = await (await fetch('/api/capture/poc', {method:'POST',
-        headers:{'Content-Type':'application/json'}, body: JSON.stringify({case_id: caseId})})).json();
+        headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)})).json();
       if (!d.ok){ out.textContent = ''; body.innerHTML = '<div class="err">' + esc(d.error || '生成失败') + '</div>'; return; }
       out.innerHTML = '脚本：<code>' + esc(d.path) + '</code>';
       body.innerHTML = `<div class="sect"><div class="note"><b>${esc(d.title)}（${esc(d.scenario)} · ${esc(d.cwe)}）</b></div>
@@ -1277,10 +1413,64 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
   }
   function stopPolling(){ if (timer){ clearInterval(timer); timer = null; } }
   function startPolling(){ stopPolling(); timer = setInterval(poll, 1000); }
+
+  /* ---- 模型解读：勾了开关才有内容；一有内容它就是捕获的**主输出**（排在列表之上）----
+     为什么每秒拉全量：解读天生**后到**（模型比内核慢），一条请求可能先出现在列表里、
+     几秒后才有解读；列表本身很小，全量拉比维护增量游标简单也不易错。 */
+  function renderInterp(d){
+    const sect = box('cap-interp'), body = box('cap-interp-body');
+    if (!sect || !body || !d) return;
+    const items = (d.items || []).slice().reverse();      // 最近的排最前
+    const stats = d.stats || {};
+    const skipped = (stats.dropped || 0) + (stats.capped || 0);
+    if (!items.length){
+      sect.hidden = !capInterpret;
+      body.innerHTML = capInterpret
+        ? '<div class="note">已开启模型解读：出现「最强的一条」分歧时，模型会把证据翻成人话放到这里。'
+          + (skipped ? '（已有 ' + skipped + ' 条因队列满 / 达上限跳过）' : '') + '</div>'
+        : '';
+      return;
+    }
+    box('cap-interp-hint').innerHTML =
+      '判定已由确定性内核给出；下面是模型把证据翻译成人话，只作参考　·　已解读 '
+      + (stats.done || items.length) + ' 条'
+      + (stats.failed ? ' · 未产出 ' + stats.failed + ' 条' : '')
+      + (skipped ? ' · 跳过 ' + skipped + ' 条（模型跟不上流量）' : '');
+    body.innerHTML = items.map(it => {
+      const text = it.interpret || {};
+      return `<article class="interp-item" data-case="${esc(it.case_id || '')}">
+        <div class="interp-q">
+          <span class="qt">${esc(it.method)} ${esc(it.host)}${esc(it.path || '')}</span>
+          <span class="qb">${it.level === 'security'
+            ? '<span class="badge security">安全级</span>' : '<span class="badge unknown">疑点</span>'}
+            <span class="badge">${esc(it.domain || '')}</span></span>
+        </div>
+        <div class="interp-a">
+          <p class="interp-lead">${esc(text.impact || '—')}</p>`
+        + (text.cwe_hint ? `<div class="kv"><span class="k">CWE 建议</span>${esc(text.cwe_hint)}</div>` : '')
+        + (text.fix ? `<div class="kv"><span class="k">修复建议</span>${esc(text.fix)}</div>` : '')
+        + `<div class="interp-note">以上是<b>模型的转述</b>，不是判定 —— 级别、CWE 与证据仍以内核给出的为准。
+           内核判定理由：${esc(it.reason || '—')}　·　模型：${esc(text.model || '—')}</div>
+        </div></article>`;
+    }).join('');
+    sect.hidden = false;
+    body.querySelectorAll('.interp-item').forEach(node => {
+      node.onclick = () => selectCase(node.dataset.case);   // 点解读 = 选中那条请求看证据
+    });
+    /* 正在看的那条解读到货了就就地补上（不然要手动重选一次才看得到） */
+    if (sel && sel.case_id){
+      const mine = (d.items || []).find(x => x.case_id === sel.case_id);
+      if (mine && JSON.stringify(mine.interpret) !== JSON.stringify(sel.interpret || null)){
+        sel.interpret = mine.interpret;
+        detail(sel.case_id);
+      }
+    }
+  }
   async function poll(){
     try {
       const d = await (await fetch('/api/capture/records?since=' + seq)).json();
-      renderStats(d.summary);
+      liveSummary = d.summary;
+      if (!viewRows) renderStats(d.summary);      // 正在回看历史就别把它的卡片盖掉
       let touched = false;
       if (d.counts){
         Object.keys(d.counts).forEach(cid => {
@@ -1293,8 +1483,20 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
         seq = d.records[d.records.length - 1].seq;
         touched = true;
       }
-      if (touched) renderList();
-      if (!d.running) stopPolling();
+      // 回看历史时列表与解读都定格在快照上：只把当前那次的记录悄悄攒起来，
+      // 等点「回到当前」就是现成的（切换不要有等待感）
+      if (touched){
+        if (!viewRows) renderList();
+        refreshSessions();
+      }
+      if (!viewRows){
+        try {
+          const interp = await (await fetch('/api/capture/interpretations')).json();
+          lastInterpStats = interp.stats || {};   // 清空列表时用它把面板摆回空态
+          renderInterp(interp);
+        } catch(err){ /* 解读列表拿不到不影响捕获主流程 */ }
+      }
+      if (!d.running){ stopPolling(); refreshSessions(); }
     } catch(err){ stopPolling(); }
   }
   async function go(){
@@ -1304,6 +1506,7 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
     const jsonl = box('cap-jsonl').value.trim();
     const upstream = box('cap-upstream').value.trim();
     const payload = {port: isNaN(port) ? 18081 : port, analyze_all: box('cap-all').checked};
+    payload.interpret = box('cap-llm').checked;   // 与检测页、设置页是同一个开关
     if (domain) payload.domains = [domain];
     if (jsonl) payload.jsonl = jsonl;
     if (upstream) payload.upstream = upstream;
@@ -1311,30 +1514,272 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
       const d = await (await fetch('/api/capture/start', {method:'POST',
         headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)})).json();
       if (!d.ok){ box('cap-err').innerHTML = '<div class="err">' + esc(d.error || '启动失败') + '</div>'; return; }
-      rows = []; seq = 0; sel = null;
-      box('cap-list').innerHTML = '';
+      rows = []; seq = 0; sel = null; viewId = null; viewRows = null;
+      lastInterpStats = {};
+      renderList();                               // 列表与「清空记录」键一起回到起手状态
+      renderHistBar();                            // 新起一次接入：从"回看"回到"当前"
+      box('cap-interp-body').innerHTML = '';      // 新一轮：上一轮的解读不留在这里
+      box('cap-interp').hidden = true;
       box('cap-evidence').className = 'note';
       box('cap-evidence').textContent = '← 请选择左侧条目';
       setCapState('运行中：代理 127.0.0.1:' + d.port + (d.mitm === false
-        ? '（HTTPS 未拆包：本解释器缺 cryptography —— pip install cryptography 后重启再开捕获）'
+        ? '（HTTPS 未拆包：缺证书依赖，看上方「HTTPS 解密证书」一行）'
         : '（HTTP 明文 + HTTPS 本地 CA 解密）'));
+      capInterpret = !!d.interpret;
+      if (d.interpret_note){                      // 勾了但模型没配好：如实说，不假装
+        box('cap-err').innerHTML = '<div class="alert alert-warn">' + esc(d.interpret_note) + '</div>';
+      }
       box('cap-go').disabled = true; box('cap-stop').disabled = false;
       renderStats(d.summary);
       startPolling();
+      refreshSessions();                          // 侧栏立刻出现"正在进行的那次"
     } catch(err){ box('cap-err').innerHTML = '<div class="err">' + fetchFailHint(err) + '</div>'; }
   }
   async function stop(){
+    const wasId = (sessions.find(x => x.running) || {}).id;   // 停之前先记住"是哪一次"
     try {
       const d = await (await fetch('/api/capture/stop', {method:'POST',
         headers:{'Content-Type':'application/json'}, body: '{}'})).json();
       setCapState('已停止' + (d.summary ? '　' + d.summary.requests + ' 条请求 / 分歧 ' + d.summary.divergences : ''));
       box('cap-go').disabled = false; box('cap-stop').disabled = true;
       stopPolling();
-      renderStats(d.summary);
+      liveSummary = d.summary;
+      if (!viewRows) renderStats(d.summary);
+      await refreshSessions();                    // 这次会话进侧栏归档
+      // 停下来就没有"当前"了：中栏直接摆成刚结束那次的快照（顶部有「回到当前」）——
+      // 否则"刚才那份列表"和侧栏那次会话会同时存在，同一批记录又看两处
+      if (wasId && sessions.some(x => x.id === wasId)) openSession(wasId);
     } catch(err){ box('cap-err').innerHTML = '<div class="err">' + fetchFailHint(err) + '</div>'; }
   }
   box('cap-go').onclick = go;
   box('cap-stop').onclick = stop;
+  box('cap-clear').onclick = forgetAll;
+  box('cap-hist-back').onclick = () => backToLive();
+
+  /* ================= 会话：侧栏按"一次接入一条"归档 =================
+     为什么不再逐条列进侧栏：那份请求列表就常驻在中栏，自带筛选、删除与证据面板，
+     再抄一份等于同一批记录摆两处。侧栏只留"哪一次接入、多少条、有多严重"，
+     点开就回到那次的记录与证据 —— 正在跑的那次也在这份清单里（标「进行中」）。 */
+  async function refreshSessions(){
+    try {
+      sessions = (await (await fetch('/api/capture/sessions')).json()).sessions || [];
+    } catch(err){ /* 拿不到就沿用上一次的清单，总比把侧栏清空强 */ }
+    if (window.__sideSync) window.__sideSync();
+    renderHistBar();
+  }
+  function renderHistBar(){
+    const bar = box('cap-hist');
+    if (!bar) return;
+    const s = viewId ? sessions.find(x => x.id === viewId) : null;
+    bar.hidden = !s;
+    if (!s) return;
+    const sum = s.summary || {};
+    box('cap-hist-text').textContent =
+      '正在看 ' + hhmm(s.t0) + '–' + hhmm(s.t1) + ' 那一次接入的快照：'
+      + (sum.requests || 0) + ' 条请求 · 分歧 ' + (sum.divergences || 0)
+      + ' · 安全级 ' + (sum.security_requests || 0) + ' 条（记录与证据都在，快照不能删）';
+  }
+  function backToLive(){
+    viewId = null; viewRows = null; sel = null;
+    box('cap-evidence').className = 'note';
+    box('cap-evidence').textContent = '← 请选择左侧条目';
+    renderList();
+    renderStats(liveSummary || ZERO_STATS);
+    renderHistBar();
+  }
+  async function openSession(id){
+    const s = sessions.find(x => x.id === id);
+    if (!s) return;
+    if (s.running){ backToLive(); return; }
+    try {
+      const d = await (await fetch('/api/capture/records?since=0&limit=2000&session='
+                                   + encodeURIComponent(id))).json();
+      viewId = id; viewRows = d.records || []; sel = null;
+      renderStats(d.summary || s.summary);
+      box('cap-evidence').className = 'note';
+      box('cap-evidence').textContent = '← 请选择左侧条目';
+      renderList();
+      renderHistBar();
+      try {
+        renderInterp(await (await fetch('/api/capture/interpretations?session='
+                                        + encodeURIComponent(id))).json());
+      } catch(err){ /* 那次没留下解读就不摆解读面板，别的照看 */ }
+    } catch(err){
+      viewId = null; viewRows = null;
+      box('cap-err').innerHTML = '<div class="err">回看这次会话失败：'
+        + fetchFailHint(err) + '</div>';
+    }
+  }
+  async function forgetSession(id){
+    if (viewId === id) backToLive();              // 正在看它就先回到当前，别停在空白上
+    sessions = sessions.filter(x => x.id !== id); // 侧栏立刻响应，不等服务端往返
+    if (window.__sideSync) window.__sideSync();
+    try {
+      await fetch('/api/capture/session/forget', {method:'POST',
+        headers:{'Content-Type':'application/json'}, body: JSON.stringify({id: id})});
+    } catch(err){ /* 服务端没连上也不回滚：这次移除只是没过服务端，重启后会回来 */ }
+  }
+  window.__capSessions = () => sessions;          // 侧栏读它
+  window.__capOpenSession = openSession;
+  window.__capForgetSession = forgetSession;
+  refreshSessions();                              // 打开页面就把已有会话摆进侧栏
+
+  /* ---- 本地 CA：状态是**真查**的（macOS 直读用户域信任设置），
+          导入 / 撤销交给服务端；失败把系统原话贴出来，不做「看起来成功了」的假象。 ---- */
+  const CA_STATE_CLASS = {trusted:'badge badge-ok', untrusted:'badge badge-warn',
+                          unknown:'badge badge-warn', unsupported:'badge badge-warn',
+                          no_dependency:'badge badge-warn'};
+  let caStatus = null;                     // 最近一次状态（导入小窗要知道本机有没有 CA）
+  function renderCa(d){
+    caStatus = d;
+    const badge = box('ca-badge');
+    badge.className = CA_STATE_CLASS[d.state] || 'badge';
+    badge.textContent = d.title || '待确认';
+    box('ca-note').textContent = d.note || '';
+    const hint = box('ca-hint');
+    hint.textContent = d.hint || '';
+    hint.hidden = !d.hint;
+    const trust = box('ca-trust');
+    trust.hidden = !(d.supported && d.state !== 'trusted');
+    trust.textContent = d.state === 'missing' ? '生成并信任' : '信任本机 CA';
+    box('ca-undo').hidden = !(d.supported && d.state === 'trusted');
+    box('ca-download').hidden = !d.mitm;
+    box('ca-refresh').hidden = !d.mitm || d.state === 'trusted';
+    // 已经签过多少张叶子证书 + 能不能清理：数字来自服务端实测，不是前端自己记的账
+    const leaves = d.leaves || 0;
+    box('ca-leaves').textContent = leaves ? '已签发 ' + leaves + ' 个域名的证书' : '';
+    box('ca-import').hidden = !d.mitm;          // 没装依赖时导进来也用不了，索性不摆
+    box('ca-purge').hidden = !d.mitm;
+    box('ca-purge').disabled = !leaves;
+  }
+  async function refreshCa(){
+    try {
+      renderCa(await (await fetch('/api/capture/ca/status')).json());
+    } catch(err){
+      box('ca-badge').className = 'badge';
+      box('ca-badge').textContent = '查不到';
+      box('ca-err').innerHTML = '<div class="err">' + fetchFailHint(err) + '</div>';
+    }
+  }
+  window.refreshCaStatus = refreshCa;      // 切到「流量接入」时重查一次
+  async function caAction(undo){
+    const btn = undo ? box('ca-undo') : box('ca-trust');
+    const idle = btn.textContent;
+    box('ca-err').innerHTML = '';
+    btn.disabled = true;
+    btn.textContent = '等待系统确认…';       // 可能要等钥匙串密码框，先说明白，别让人以为卡死
+    try {
+      const d = await (await fetch('/api/capture/ca/trust', {method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({confirm:true, undo:undo})})).json();
+      if (!d.ok){
+        box('ca-err').innerHTML = '<div class="err">' + esc(d.error || '操作失败') + '</div>';
+        if (d.hint){ const hint = box('ca-hint'); hint.textContent = d.hint; hint.hidden = false; }
+      }
+    } catch(err){ box('ca-err').innerHTML = '<div class="err">' + fetchFailHint(err) + '</div>'; }
+    finally { btn.disabled = false; btn.textContent = idle; }
+    await refreshCa();                       // 结论以系统实况为准，不拿命令返回码推断
+  }
+  box('ca-trust').onclick = () => caAction(false);
+  box('ca-undo').onclick = () => caAction(true);
+  box('ca-refresh').onclick = () => { box('ca-err').innerHTML = ''; refreshCa(); };
+  /* 下载走服务端的附件响应：浏览器直接落盘，页面不跳走 */
+  box('ca-download').onclick = () => { location.assign('/api/capture/ca'); };
+
+  /* ---- 导入已有 CA：一张被授权的 CA 全队共用，不必每人各生成一张 ----
+     文件内容经 base64 上传，服务端只认内容、不认本机路径（否则这条接口就成了
+     任意文件读取）。解析、校验（是不是 CA / 私钥是不是一对）全在服务端做。 */
+  const b64 = bytes => {              // 二进制 → base64：文件就几 KB，分块拼避免爆栈
+    let text = '';
+    for (let i = 0; i < bytes.length; i += 0x8000)
+      text += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    return btoa(text);
+  };
+  const fileB64 = async file => b64(new Uint8Array(await file.arrayBuffer()));
+  function caDialogError(message){
+    box('ca-dlg-err').innerHTML = message ? '<div class="err">' + esc(message) + '</div>' : '';
+  }
+  function openCaImport(){
+    caDialogError('');
+    box('ca-file-cert').value = ''; box('ca-file-key').value = ''; box('ca-pass').value = '';
+    box('ca-replace').checked = false;
+    // 本机已经有 CA 才需要「替换」这一下确认（服务端也要求，绕不过去）
+    const cn = (caStatus && caStatus.cn) || '';
+    box('ca-replace-row').hidden = !cn;
+    box('ca-dlg-msg').textContent = cn
+      ? '本机已有一张 CA（' + cn + '）—— 导入会替换它，旧的叶子证书一起清掉'
+      : '导入后若本机还没信任它，点「信任本机 CA」写进系统信任库';
+    const dlg = box('ca-dlg');
+    if (typeof dlg.showModal === 'function') dlg.showModal();
+    else dlg.setAttribute('open', '');           // 老浏览器兜底
+  }
+  box('ca-import').onclick = openCaImport;
+  box('ca-dlg-x').onclick = () => box('ca-dlg').close();
+  box('ca-dlg-close').onclick = () => box('ca-dlg').close();
+  box('ca-import-go').onclick = async () => {
+    const certFile = box('ca-file-cert').files[0];
+    if (!certFile){ caDialogError('先选 CA 文件（.pem / .crt / .p12 都可以）'); return; }
+    const replace = !box('ca-replace-row').hidden;
+    if (replace && !box('ca-replace').checked){
+      caDialogError('本机已经有一张 CA：要换掉它，请勾上「我确认替换本机现有的 CA」');
+      return;
+    }
+    const keyFile = box('ca-file-key').files[0];
+    const btn = box('ca-import-go'), idle = btn.textContent;
+    btn.disabled = true; btn.textContent = '导入中…';
+    box('ca-err').innerHTML = ''; box('ca-result').textContent = '';
+    try {
+      const payload = {confirm: true, replace: replace && box('ca-replace').checked,
+                       cert_b64: await fileB64(certFile)};
+      if (keyFile) payload.key_b64 = await fileB64(keyFile);
+      if (box('ca-pass').value) payload.password = box('ca-pass').value;
+      const resp = await fetch('/api/capture/ca/import', {method:'POST',
+        headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
+      const d = await resp.json();
+      if (!d.ok){
+        caDialogError((d.error || '导入失败')
+          + (resp.status === 404 ? '（服务端还是旧版本 —— 重启界面服务后再试）' : ''));
+        return;
+      }
+      box('ca-dlg').close();
+      box('ca-result').textContent = '已导入 ' + d.cn + '（' + d.format + '：' + d.subject + '）'
+        + (d.replaced ? '，替换了原有 CA' : '')
+        + (d.domains ? '；旧的 ' + d.domains + ' 个域名叶子证书已一起清掉' : '');
+      await refreshCa();                 // 状态、CN、叶子数一律以实测为准
+      // 导入 ≠ 本机信任：这一步是每台机器各自的事，顺手把下一句说清楚
+      if (caStatus && caStatus.state !== 'trusted'){
+        box('ca-result').textContent += '　本机还没信任它 —— 点「'
+          + (box('ca-trust').textContent || '信任本机 CA') + '」写进系统信任库。';
+      }
+    } catch(err){
+      caDialogError('导入失败：' + fetchFailReason(err));
+    } finally { btn.disabled = false; btn.textContent = idle; }
+  };
+
+  /* ---- 清理已签发的叶子证书：域名攒多了就清一次，下个请求会重新签 ---- */
+  box('ca-purge').onclick = async () => {
+    const leaves = (caStatus && caStatus.leaves) || 0;
+    if (!confirm('清掉已经签发的叶子证书（' + leaves + ' 个域名）？\n\n'
+        + '下次访问同一个域名会重新签一张，正在跑的捕获不受影响；'
+        + 'JSONL 里已经记下的流量也不会动。')) return;
+    box('ca-err').innerHTML = ''; box('ca-result').textContent = '';
+    try {
+      const resp = await fetch('/api/capture/ca/purge', {method:'POST',
+        headers:{'Content-Type':'application/json'}, body: '{}'});
+      const d = await resp.json();
+      if (!d.ok){
+        const why = (d.error || '清理失败')
+          + (resp.status === 404 ? '（服务端还是旧版本 —— 重启界面服务后再试）' : '');
+        box('ca-err').innerHTML = '<div class="err">' + esc(why) + '</div>';
+        return;
+      }
+      box('ca-result').textContent = d.files
+        ? '已清理 ' + d.domains + ' 个域名的证书（' + d.files + ' 个文件）；下次访问会重新签'
+        : '本来就没有已签发的证书';
+      await refreshCa();
+    } catch(err){ box('ca-err').innerHTML = '<div class="err">' + fetchFailHint(err) + '</div>'; }
+  };
+
   /* ---- 捕获设置小窗：原生 dialog（ESC / 点背景自带关闭），控件沿用原 id ---- */
   function capSummaryText(){
     const port = parseInt(box('cap-port').value, 10) || 18081;
@@ -1344,6 +1789,7 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
     const jsonl = box('cap-jsonl').value.trim();
     return '端口 ' + port + ' · ' + name
       + (box('cap-all').checked ? ' · 连静态资源' : ' · 跳过静态资源')
+      + (box('cap-llm').checked ? ' · 模型解读开' : ' · 不解读')
       + (jsonl ? ' · 记录到 ' + jsonl : ' · 不写记录文件');
   }
   function refreshCapSummary(){ box('cap-summary').textContent = capSummaryText(); }
@@ -1364,7 +1810,7 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
   document.querySelectorAll('.cap-settings').forEach(b => { b.onclick = openCapSettings; });
   box('cap-dlg-x').onclick = () => box('cap-dlg').close();
   box('cap-dlg-close').onclick = () => box('cap-dlg').close();
-  ['cap-port','cap-domain','cap-all','cap-jsonl'].forEach(id => {
+  ['cap-port','cap-domain','cap-all','cap-jsonl','cap-llm'].forEach(id => {
     box(id).addEventListener('input', refreshCapSummary);
     box(id).addEventListener('change', refreshCapSummary);
   });
@@ -1384,12 +1830,14 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
       const d = await (await fetch('/api/capture/state')).json();
       if (d.running){
         box('cap-port').value = d.port;
+        capInterpret = !!d.interpret;
         setCapState('运行中：代理 127.0.0.1:' + d.port);
         box('cap-go').disabled = true; box('cap-stop').disabled = false;
         renderStats(d.summary);
         startPolling();
       }
     } catch(err){ /* 服务没起来时安静退出 */ }
+    refreshCa();
   })();
 })();
 
@@ -1397,7 +1845,7 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
 (function(){
   const $id = id => document.getElementById(id);
   let mode = 'manual';
-  let sideSel = null;                       // {kind:'cap'|'find', key}
+  let sideSel = null;                       // 选中的那条历史（存它自己的 key，见 sideRender）
   const dtHistory = [];                     // {ts, title, arr} —— 每次手动检测的发现集合
 
   /* ---- 模式切换：六个面板互斥显示（状态写入 hash，可深链、可回退）---- */
@@ -1423,6 +1871,8 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
     Object.entries(MODE_PANELS).forEach(([k, id]) => {
       const el = $id(id); if (el) el.hidden = k !== m;
     });
+    // 进「流量接入」重查一次证书状态：本机信任库可能在别处被动过
+    if (m === 'capture' && window.refreshCaStatus) window.refreshCaStatus();
     // 流程 / 报告 / 解读是手动检测的产出；其余模式下整块隐藏，避免无关产出挂在面板里
     const out = $id('dt-output');
     if (out) out.hidden = m !== 'manual';
@@ -1475,80 +1925,99 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
     return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0')
          + '-' + String(d.getDate()).padStart(2, '0');
   }
-  function capBadge(r){
-    const a = r.analysis;
-    if (r.tunnel) return '<span class="badge">隧道</span>';
-    if (!a) return '';
-    if (a.security) return '<span class="badge security">' + a.security + '</span>';
-    if (a.divergences) return '<span class="badge unknown">' + a.divergences + '</span>';
-    return '<span class="badge compatibility">一致</span>';
-  }
   function sideRender(){
     const list = $id('side-list');
     if (!list) return;
-    const items = [];
-    (window.__capRows || []).forEach((r, i) => {
-      if (r.tunnel) return;                 // 隧道（未拆包）不进历史
-      items.push({kind: 'cap', i, ts: r.ts ? new Date(r.ts) : new Date(0),
-        title: (r.method || '') + ' ' + (r.host || '') + (r.path || ''),
-        badge: capBadge(r), key: r.case_id || ('cap' + i)});
-    });
-    dtHistory.forEach((e, i) => items.push({kind: 'find', i, ts: e.ts,
-      title: e.title, badge: '', key: 'find' + i}));
+    /* 本栏归档两样东西，都是**一次一条**：手动检测（一次检测一条）与流量接入
+       （一次接入一条）。流量接入的**逐条请求**不进这里 —— 那份列表常驻在
+       「流量接入」面板中栏，自带筛选、删除与证据面板，再往侧栏抄一遍等于同一批
+       记录摆两处、还各有删除键。点会话那一条，回到的就是那次的记录与证据。
+       键用**稳定标识**（历史条目 id / 会话 id），不用下标：删掉一条之后下标会
+       整排往前挪，按下标存的选中项就会指到隔壁那条上。 */
+    const items = dtHistory.map(e => ({kind: 'find', key: String(e.id), ts: e.ts,
+      title: e.title, badge: '', live: false}));
+    (window.__capSessions ? window.__capSessions() : []).forEach(s => items.push({
+      kind: 'cap', key: s.id, ts: new Date((s.t1 || s.t0) * 1000),
+      title: '流量接入 · ' + hhmm(s.t0) + (s.running ? '（进行中）' : ''),
+      badge: sessionBadge(s), live: !!s.running}));
     items.sort((a, b) => b.ts - a.ts);
     $id('side-count').textContent = items.length ? items.length + ' 条' : '';
     if (!items.length){
-      list.innerHTML = '<div class="side-empty">暂无记录；这里会按日期归档本次会话内的手动检测与流量接入</div>';
+      list.innerHTML = sideEmptyHtml();
       return;
     }
     let html = '', lastDay = '';
-    const selKey = sideSel ? sideSel.kind + ':' + sideSel.key : '';
     items.forEach(it => {
       const d = dayLabel(it.ts);
       if (d !== lastDay){ html += '<div class="side-day">' + d + '</div>'; lastDay = d; }
-      const sel = selKey === it.kind + ':' + it.key ? ' sel' : '';
+      const sel = sideSel === it.kind + ':' + it.key ? ' sel' : '';
+      // 正在跑的那次没有删除键：它还在收流量，要清的是它的列表（中栏「清空记录」）
+      const del = it.live ? '' : '<button type="button" class="rowdel side-del"'
+            + ' title="从历史里移除这一条（不影响 JSONL 台账，也不动中栏已出的结论）"'
+            + ' aria-label="删除这条记录">✕</button>';
       html += '<div class="side-item' + sel + '" data-kind="' + it.kind
-            + '" data-i="' + it.i + '" data-key="' + it.key + '">'
+            + '" data-key="' + esc(it.key) + '">'
             + '<span class="t" title="' + it.title.replace(/"/g, '&quot;') + '">'
-            + esc(it.title) + '</span>' + it.badge + '</div>';
+            + esc(it.title) + '</span>' + it.badge + del + '</div>';
     });
     list.innerHTML = html;
     list.querySelectorAll('.side-item').forEach(el => el.onclick = () => {
-      const kind = el.dataset.kind, i = parseInt(el.dataset.i, 10);
-      sideSel = {kind, key: el.dataset.key};
-      if (kind === 'cap'){
-        const r = (window.__capRows || [])[i];
+      const kind = el.dataset.kind, key = el.dataset.key;
+      sideSel = kind + ':' + key;
+      if (kind === 'cap'){                    // 一次接入：回到那次的记录与证据
         setMode('capture');
-        if (r && r.case_id){
-          selCap(r); sideRender();
-          if (window.__capDetail) window.__capDetail(r.case_id);
-        }
-      } else {
-        const e = dtHistory[i];
-        setMode('manual');
-        if (window.__dtLoad) window.__dtLoad(e.arr);
-        showResultTab('panel-findings');
-        const rep = $id('dt-reportcard'); if (rep) rep.open = true;   // 点了历史就得能看见那条
+        if (window.__capOpenSession) window.__capOpenSession(key);
         sideRender();
+        return;
       }
+      const e = dtHistory.find(x => x.id === Number(key));
+      if (!e) return;
+      setMode('manual');
+      if (window.__dtLoad) window.__dtLoad(e.arr);
+      showResultTab('panel-findings');
+      const rep = $id('dt-reportcard'); if (rep) rep.open = true;   // 点了历史就得能看见那条
+      sideRender();
+    });
+    list.querySelectorAll('.side-del').forEach(btn => btn.onclick = ev => {
+      ev.stopPropagation();                 // 别把"删除"点成"打开这条"
+      const item = btn.parentNode, key = item.dataset.key;
+      if (item.dataset.kind === 'cap'){      // 移除一次接入（连带它那份快照）
+        if (window.__capForgetSession) window.__capForgetSession(key);
+        if (sideSel === 'cap:' + key) sideSel = null;
+        sideRender();
+        return;
+      }
+      const at = dtHistory.findIndex(x => x.id === Number(key));
+      if (at < 0) return;
+      dtHistory.splice(at, 1);
+      if (sideSel === 'find:' + key) sideSel = null;
+      sideRender();
     });
   }
-  function selCap(r){
-    const rows = window.__capRows || [];
-    const list = $id('cap-list');
-    if (list) list.querySelectorAll('.evitem').forEach(x =>
-      x.classList.toggle('sel', x.dataset.case === (r.case_id || '')));
+  function sessionBadge(s){
+    const sum = s.summary || {};
+    if (s.running) return '<span class="badge">进行中</span>';
+    if (sum.security_requests) {
+      return '<span class="badge security">安全级 ' + sum.security_requests + '</span>';
+    }
+    return '<span class="badge">' + (sum.requests || 0) + ' 条</span>';
+  }
+  function sideEmptyHtml(){
+    return '<div class="side-empty">暂无记录；这里按日期归档每次手动检测与每次流量接入'
+      + '（都是一次一条，点开回到那次）。逐条请求在中栏列表里，不在这里重复列。</div>';
   }
 
   /* 由捕获 / 检测两个模块回调 */
+  let dtNextId = 1;
   window.sideAddDetect = arr => {
     const sel = $id('dt-domain');
     const name = sel && sel.selectedIndex >= 0
       ? sel.options[sel.selectedIndex].textContent : '';
-    dtHistory.push({ts: new Date(), title: '手动检测 · ' + (name || '全部领域'), arr});
+    dtHistory.push({id: dtNextId++, ts: new Date(),
+                    title: '手动检测 · ' + (name || '全部领域'), arr});
     sideRender();
   };
-  window.__sideSync = () => sideRender();   // 捕获轮询里每轮调一次
+  window.__sideSync = () => sideRender();   // 捕获那边刷新会话清单后调它
   sideRender();
   const hashMode = location.hash.slice(1);
   if (MODE_PANELS[hashMode]) setMode(hashMode);          // 深链：/#scan 等直接进对应面板

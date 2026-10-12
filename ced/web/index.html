@@ -46,7 +46,7 @@
   <div class="side-hist">
     <div class="side-hd">检测历史 <span class="hint" id="side-count"></span></div>
     <div class="side-list" id="side-list">
-      <div class="side-empty">暂无记录；这里会按日期归档本次会话内的手动检测与流量接入</div>
+      <div class="side-empty">暂无记录；这里按日期归档每次手动检测与每次流量接入（都是一次一条，点开回到那次）。逐条请求在中栏列表里，不在这里重复列。</div>
     </div>
   </div>
 
@@ -167,8 +167,38 @@
         <button class="btn btn-ghost cap-settings" id="cap-open">捕获参数…</button>
         <span class="note" id="cap-summary">端口 18081 · 全部 5 个领域 · 跳过静态资源 · 不写记录文件</span>
       </div>
+      <div class="toolbar ca-row">
+        <span class="note">HTTPS 解密证书</span>
+        <span class="badge" id="ca-badge">检查中…</span>
+        <span class="note" id="ca-leaves"></span>
+        <button class="btn btn-ghost" id="ca-trust" hidden>信任本机 CA</button>
+        <button class="btn btn-ghost" id="ca-undo" hidden>撤销信任</button>
+        <button class="btn btn-ghost" id="ca-download" hidden>下载证书</button>
+        <button class="btn btn-ghost" id="ca-refresh" hidden>重新检查</button>
+        <button class="btn btn-ghost" id="ca-import" hidden
+                title="单位 / 团队已有一张被授权的 CA 时，把它的证书与私钥导进来共用">导入已有 CA…</button>
+        <button class="btn btn-ghost" id="ca-purge" hidden
+                title="清掉按域名签发的叶子证书；下次访问同一域名会自动重签">清理已签发证书</button>
+      </div>
+      <div class="note ca-note" id="ca-note"></div>
+      <div class="note ca-note" id="ca-result"></div>
+      <div id="ca-err"></div>
+      <pre class="ca-hint" id="ca-hint" hidden></pre>
       <div id="cap-err"></div>
       <div class="statcards" id="cap-stats"></div>
+      <!-- 回看历史会话时的一行提示：中栏摆的是那一次的快照，并给一条回程 -->
+      <div class="hist-bar" id="cap-hist" hidden>
+        <span class="note" id="cap-hist-text"></span>
+        <button class="btn btn-ghost" id="cap-hist-back">回到当前</button>
+      </div>
+      <!-- 模型解读：勾了「使用模型解读」才会出现内容；有内容时它是捕获的主输出，排在列表之上 -->
+      <section class="interp" id="cap-interp" hidden aria-live="polite">
+        <div class="interp-hd">
+          <h2>模型解读</h2>
+          <span class="hint" id="cap-interp-hint">判定已由确定性内核给出；下面是模型把证据翻译成人话，只作参考</span>
+        </div>
+        <div id="cap-interp-body"></div>
+      </section>
       <div class="split">
         <div>
           <div class="toolbar">
@@ -179,6 +209,8 @@
               <option value="skipped">只看跳过 / 隧道</option>
             </select>
             <input class="input" id="cap-search" type="text" placeholder="按 host / 路径 / 方法 过滤">
+            <button class="btn btn-danger" id="cap-clear" disabled
+                    title="清空网页上的这份列表；JSONL 台账文件不动">清空记录</button>
           </div>
           <div class="note" id="cap-count">0 条</div>
           <div class="evlist" id="cap-list">
@@ -312,7 +344,8 @@
           <label class="check"><input type="checkbox" id="set-cap-all"> <span>连静态资源也分析</span></label>
         </fieldset>
         <fieldset class="set"><legend>检测默认值</legend>
-          <label class="check"><input type="checkbox" id="set-detect-llm"> <span>使用模型解读</span></label>
+          <label class="check" title="手动检测与流量接入共用这一个开关；开了解读会调模型（有等待成本），判定不受影响">
+            <input type="checkbox" id="set-detect-llm"> <span>使用模型解读（手动检测与流量接入共用）</span></label>
           <div class="note">勾上后每次「开始检测」在判定完成后，再让模型把已有证据翻译成人话（影响叙述 / CWE 建议 / 修复建议）。它跑在内核出完级<b>之后</b>，只做加法 —— 判定级别一个字都不改，模型没配好或调用失败就回落成内核原文案。页面上的同名勾选框按这里的值预填。</div>
         </fieldset>
         <fieldset class="set"><legend>扫描默认值</legend>
@@ -383,6 +416,9 @@
       <select class="select" id="cap-domain"><option value="">全部 5 个领域</option></select></label>
     <label class="sheet-row"><span class="k">静态资源</span>
       <span class="check"><input type="checkbox" id="cap-all"> <span>连静态资源也分析</span></span></label>
+    <label class="sheet-row"><span class="k">模型解读</span>
+      <span class="check"><input type="checkbox" id="cap-llm">
+        <span>用模型把最强的那一条翻成人话（要配好模型；与检测页、设置页是同一个开关）</span></span></label>
     <label class="sheet-row"><span class="k">记录文件</span>
       <input class="input" id="cap-jsonl" type="text" placeholder="留空 = 不写（例：ced-capture.jsonl）"></label>
     <label class="sheet-row"><span class="k">上游代理</span>
@@ -394,6 +430,37 @@
     <span class="note" id="cap-dlg-msg">直接关窗：只影响这一次；点「存为默认」：下次开页也用</span>
     <button class="btn btn-primary" id="cap-save-default">存为默认</button>
     <button class="btn btn-ghost" id="cap-dlg-close">关闭</button>
+  </div>
+</dialog>
+
+<!-- ===== 导入已有 CA：证书与私钥都从文件读内容，服务端不认路径 ===== -->
+<dialog class="sheet" id="ca-dlg">
+  <div class="sheet-hd"><h3>导入已有 CA</h3>
+    <button class="x" id="ca-dlg-x" title="关闭（Esc）">✕</button></div>
+  <div class="sheet-bd">
+    <div class="note">单位 / 团队已经有一张被授权的 CA 时用这条：把它的<b>证书与私钥</b>一起导进来共用，
+      不必每人再生成一张。文件只在本机解析，私钥落在 <code>~/.ced/mitm/</code>，不外传；
+      换 CA 之后<b>每台机器仍要各自信任一次</b> —— 信任是各人本机的设置，共用不了。</div>
+    <label class="sheet-row"><span class="k">CA 证书</span>
+      <input class="input" id="ca-file-cert" type="file"
+             accept=".pem,.crt,.cer,.p12,.pfx"></label>
+    <label class="sheet-row"><span class="k">私钥</span>
+      <input class="input" id="ca-file-key" type="file" accept=".pem,.key"></label>
+    <label class="sheet-row"><span class="k">口令</span>
+      <input class="input" id="ca-pass" type="password"
+             placeholder="私钥或 PKCS#12 有口令才填"></label>
+    <label class="sheet-row" id="ca-replace-row" hidden><span class="k">替换现有</span>
+      <span class="check"><input type="checkbox" id="ca-replace">
+        <span>我确认替换本机现有的 CA（旧的叶子证书会一起清掉）</span></span></label>
+    <div id="ca-dlg-err"></div>
+    <div class="note">证书与私钥常常就写在同一份 PEM 里 —— 那样只选第一个文件即可；
+      <code>.p12 / .pfx</code> 也认，口令填在上面。只有证书没有私钥是没法解密的：
+      解密就是用这张 CA 现场签一张叶子证书，签不出东西就只能退回隧道直通。</div>
+  </div>
+  <div class="sheet-ft">
+    <span class="note" id="ca-dlg-msg">—</span>
+    <button class="btn btn-primary" id="ca-import-go">导入</button>
+    <button class="btn btn-ghost" id="ca-dlg-close">取消</button>
   </div>
 </dialog>
 
