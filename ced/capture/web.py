@@ -15,6 +15,8 @@
 """
 from __future__ import annotations
 
+import base64
+
 import threading
 import time
 from collections import deque
@@ -22,6 +24,7 @@ from pathlib import Path
 
 from .. import artifacts
 from ..scenario.poc import build_poc
+from ..report.fixview import fix_view
 from .proxy import CaptureProxy, Config
 
 #: PoC 脚本落到仓库的 results/pocs（与扫描产出的 PoC 同一个目录，口径统一）
@@ -32,7 +35,8 @@ ARCHIVE_SESSIONS = 3
 
 #: 没有会话 / 一条都没过时的空统计（键与 ``CaptureProxy.summary()`` 对齐）
 _ZERO_SUMMARY = {"requests": 0, "analyzed": 0, "skipped": 0, "tunnels": 0,
-                 "security_requests": 0, "divergences": 0}
+                 "security_requests": 0, "divergences": 0,
+                 "divergent_requests": 0, "by_severity": {}}
 
 #: 记录里对外暴露的字段（下划线开头的私有字段一律不给出去）
 _PUBLIC_KEYS = ("ts", "seq", "case_id", "method", "host", "path", "target", "count",
@@ -252,6 +256,13 @@ class CaptureRunner:
                        "normalized": bool(record.get("normalized")),
                        "raw_b64": record.get("raw_b64", ""),
                        "raw_preview": _preview(record)})
+        # 修复形态：与**客户原样发来的字节**逐行对照。
+        # 只在点开某一条时算（列表不走这条路），所以不心疼这一点计算。
+        analysis = record.get("analysis") or {}
+        top = analysis.get("top") or {}
+        raw = base64.b64decode(record.get("raw_b64") or b"")
+        if top.get("domain") and raw:
+            detail["fix_view"] = fix_view(top["domain"], raw)
         return detail
 
     # ------------------------------------------------------------------ 删

@@ -168,7 +168,7 @@ class TestTopologies(unittest.TestCase):
 
     def test_standin_front_topology_is_a_real_chain(self):
         """无 Docker 的替身链路：必须先把自己声明成 chain，且指向探针控制口。"""
-        topology = load(ROOT / "ced" / "topologies" / "standin-front.yaml")
+        topology = load(ROOT / "ced" / "topologies" / "standin-front.json")
         self.assertEqual(topology.domain, "http1-framing")
         self.assertEqual(topology.chain, ("standin-front", "ref-cl-first"))
         front = next(s for s in topology.impls if s.impl_id == "standin-front")

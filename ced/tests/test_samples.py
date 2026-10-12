@@ -25,9 +25,25 @@ EXPECTED_RAW = {
     "05-chunked-bare-lf.bin": (8, 8),
     "06-host-trailing-dot.bin": (8, 8),
     "07-path-traversal.bin": (11, 11),
-    "08-query-pollution.bin": (43, 31),
+    "08-query-pollution.bin": (43, 22),
     "09-enc-uXXXX.bin": (9, 9),
     "10-absolute-form.bin": (29, 28),
+}
+
+#: 文件名 → 最高危险等级。与 samples/README.md 的表逐行对应。
+#: 守的是"类别与等级是两回事"这条口径：`security` 只说明结构前提成立，
+#: 程度要看等级（类型上限 + 证据强度）。
+EXPECTED_TIER = {
+    "01-benign-request.bin": "",
+    "02-cl-te-smuggling.bin": "high",
+    "03-cl-leading-zero.bin": "high",
+    "04-conflicting-cl.bin": "high",
+    "05-chunked-bare-lf.bin": "high",
+    "06-host-trailing-dot.bin": "medium",
+    "07-path-traversal.bin": "high",
+    "08-query-pollution.bin": "medium",
+    "09-enc-uXXXX.bin": "medium",
+    "10-absolute-form.bin": "high",
 }
 
 #: 外部格式文件 → 识别出的格式 + 三态条数（已证实 / 未证实）
@@ -57,6 +73,8 @@ class TestRawSamples(unittest.TestCase):
                 self.assertEqual((summary["divergences"], summary["security"]),
                                  (divergences, security),
                                  f"{name} 的结论变了，README 与实现要对齐")
+                self.assertEqual(summary["severity"], EXPECTED_TIER[name],
+                                 f"{name} 的最高危险等级变了，README 与实现要对齐")
 
     def test_benign_sample_is_the_control_group(self):
         """对照组：正常请求一个分歧都不许有（防假阳性）。"""

@@ -15,3 +15,6 @@ refs/
 
 # 网页「设置」面板保存的配置（含模型 API Key，绝不入库）
 /ced-settings.json
+
+# macOS 目录元数据
+.DS_Store

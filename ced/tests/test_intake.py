@@ -20,7 +20,7 @@ sys.path.insert(0, str(ROOT))
 # import 即触发领域注册（@register）
 from ced.adapters import url_norm  # noqa: F401
 from ced.intake import (CONFIRMED, REFUTED, UNVERIFIABLE, Hypothesis,
-                        Verification, load, verify)
+                        load, verify)
 
 #: 一条真会被检出的输入：`..` 段在"解算 / 保留"两侧造成不同资源
 DIVERGENT_URL = "http://example.com/admin/../pub"

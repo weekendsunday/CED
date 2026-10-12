@@ -5,7 +5,10 @@
     python -m ced web --no-open       # 不自动开浏览器
 
 控制台由三部分组成：
-  * 扫描任务   —— POST /api/scan/start + SSE /api/scan/events 实时进度
+  * 产品实测   —— POST /api/scan/start + SSE /api/scan/events 实时进度；
+                 「接我的产品」时带内联 link 连线设置，起跑前用
+                 POST /api/scan/link/check 做三步连通性自检，
+                 POST /api/scan/link/parse 读导入的连线设置文件
   * 结果 triage —— /api/scan/result，形状来自 ``report.renderer.result_payload``
   * 模型解读   —— /api/assist/status + 判定结果里的 interpret 字段（判定仍由内核给）；
                 手动检测挂在发现上，流量接入挂在记录上（/api/capture/interpretations）
@@ -37,7 +40,8 @@ from ..capture.web import CaptureRunner
 from ..contracts import ImplSpec
 from ..impls import reference
 from ..metrics import matrix_heatmap, scan_metrics
-from ..orchestrate.topology import load
+from ..orchestrate.topology import (SettingsError, build, check_link,
+                                     from_text, load, to_settings)
 from ..probe import Evaluator
 from ..report.renderer import result_payload
 from ..scan import JobRegistry
@@ -114,6 +118,21 @@ def _domains_info() -> dict:
         except KeyError:
             items.append({"name": name, "impls": 0, "pairs": 0})
     return {"domains": sorted(items, key=lambda d: d["name"])}
+
+
+def _domain_impls(domain: str) -> list[str]:
+    """某个领域里的内置参照实现 id 一览 —— 「记录员的读法」下拉靠它填充。
+
+    探针用 ``--policy <id>`` 启动；这里列的就是它合法的取值。
+    """
+    from ..impls import local_specs
+
+    if domain not in ADAPTERS:
+        return []
+    try:
+        return [s.impl_id for s in local_specs(domain)]
+    except KeyError:                # 领域还没注册参照实现
+        return []
 
 
 def _decode_upload(value) -> tuple[bytes, str]:
@@ -255,6 +274,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(_impls_info())
         if url.path == "/api/domains":
             return self._json(_domains_info())
+        if url.path == "/api/scan/impls":
+            return self._json({"impls": _domain_impls(
+                (query.get("domain") or ["http1-framing"])[0])})
         if url.path == "/api/cases":
             return self._json({"cases": [_case_brief(c)
                                          for c in regression.load_cases()]})
@@ -348,6 +370,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._scan_start(body)
         if url.path == "/api/scan/abort":
             return self._scan_abort(body)
+        if url.path == "/api/scan/link/check":
+            return self._scan_link_check(body)
+        if url.path == "/api/scan/link/parse":
+            return self._scan_link_parse(body)
         if url.path == "/api/capture/start":
             return self._capture_start(body)
         if url.path == "/api/capture/stop":
@@ -596,17 +622,66 @@ class Handler(BaseHTTPRequestHandler):
         except (TypeError, ValueError):
             return self._json({"error": "随机种子必须是整数"}, 400)
 
+        # 连线设置（界面上的"接我的产品"）：内联对象，不是文件路径。
+        # 起任务前先用同一套加载器校验一遍 —— 字段写错当场给人话，
+        # 而不是等线程里抛、或者（更糟）跑完 0 条分歧还不吭声。
+        link = body.get("link")
+        if link is not None and not isinstance(link, dict):
+            return self._json({"error": "连线设置应该是一组字段（对象）"}, 400)
+        if link:
+            try:
+                build(link, domain=domain)
+            except SettingsError as exc:
+                return self._json({"error": str(exc)}, 400)
+
+        # 老写法：给一个拓扑文件路径（命令行同款）。保留兼容。
         topology = (body.get("topology") or "").strip()
         if topology:
             try:                    # 起任务前先把拓扑读通，别等进了线程才炸
                 load(topology)
-            except Exception as exc:
+            except SettingsError as exc:
                 return self._json({"error": f"拓扑文件读不了：{exc}"}, 400)
 
         job = scan_runner.start(
             REGISTRY, domain=domain, mode=mode, limit=limit, seed=seed,
-            topology=topology)
+            topology=topology, link=link or None)
         return self._json({"job_id": job.job_id})
+
+    def _scan_link_check(self, body: dict) -> None:
+        """界面上的「检查连通性」：问身份 → 清记录 → 试发一条。
+
+        只回答问题，不替用户下结论：哪一步没过、为什么没过，都写在 steps 里。
+        """
+        domain = (body.get("domain") or "").strip()
+        if domain not in ADAPTERS:
+            return self._json(
+                {"error": f"未知领域：{domain}（可选：{', '.join(sorted(ADAPTERS))}）"}, 400)
+        try:
+            report = check_link(body.get("link") or {}, domain=domain)
+        except SettingsError as exc:
+            return self._json({"error": str(exc)}, 400)
+        except Exception as exc:                # noqa: BLE001 —— 如实报，不静默
+            return self._json({"error": f"检查连通性时出错：{exc}"}, 400)
+        return self._json(report)
+
+    def _scan_link_parse(self, body: dict) -> None:
+        """导入连线设置：把用户选中的文件内容读成规范形状交回前端。
+
+        为什么走服务端而不是前端自己解析：.yaml 只能由这边的解析器读，
+        而且报错要跟命令行**同一套人话**（少一个字段、写错 runner 都当场说清）。
+        """
+        text = body.get("text")
+        if not isinstance(text, str) or not text.strip():
+            return self._json({"error": "没有收到文件内容"}, 400)
+        name = str(body.get("filename") or "连线设置.json")
+        suffix = Path(name).suffix.lower() or ".json"
+        try:
+            topo = from_text(text, suffix=suffix, source=name)
+        except SettingsError as exc:
+            return self._json({"error": str(exc)}, 400)
+        return self._json({"settings": to_settings(topo),
+                           "domain": topo.domain,
+                           "impls": len(topo.impls)})
 
     def _scan_abort(self, body: dict) -> None:
         job_id = (body.get("job_id") or "").strip()

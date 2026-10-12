@@ -22,7 +22,7 @@ const hhmm = ts => {
        + String(d.getMinutes()).padStart(2, '0');
 };
 
-/* ---------- 载入领域（矩阵扫描面板用） ---------- */
+/* ---------- 载入领域（产品实测面板用） ---------- */
 let DOMAINS = [];
 fetch('/api/domains').then(r => r.json()).then(d => {
   DOMAINS = d.domains || [];
@@ -160,6 +160,142 @@ $('#runchk').onclick = async () => {
 /* ================= 扫描控制台 ================= */
 const LEVEL_RANK = {security:0, unknown:1, compatibility:2};
 const LEVEL_LABEL = {security:'安全级', unknown:'待复核', compatibility:'兼容性'};
+
+/* 危险等级（五档）—— 与"安全级/疑点/兼容性"这套**类别**正交：
+   类别回答"算不算安全问题"，等级回答"多严重、证据多硬"。
+   等级 = 类型上限（这类分歧最好能有多严重）+ 证据强度（实机测量 / 有量化错位 / 量化不出来）。 */
+const SEVERITY_RANK = {critical:0, high:1, medium:2, low:3, info:4};
+const SEVERITY_LABEL = {critical:'严重', high:'高', medium:'中', low:'低', info:'信息'};
+const SEVERITY_ORDER = ['critical','high','medium','low','info'];
+function sevLabel(v){ return SEVERITY_LABEL[v] || v || ''; }
+function sevBadge(v){
+  return v ? `<span class="badge sev-${esc(v)}">${esc(sevLabel(v))}</span>` : '';
+}
+function worstSeverity(counts){
+  const keys = Object.keys(counts || {}).filter(k => counts[k]);
+  if (!keys.length) return '';
+  keys.sort((a, b) => (SEVERITY_RANK[a] ?? 9) - (SEVERITY_RANK[b] ?? 9));
+  return keys[0];
+}
+function severityBreakdown(counts){
+  const keys = SEVERITY_ORDER.filter(k => (counts || {})[k]);
+  if (!keys.length) return '';
+  return keys.map(k => `${sevLabel(k)} ${counts[k]}`).join(' · ');
+}
+/* 内核给的说明是**写给 markdown 报告**的（带 `**强调**` 和反引号）——
+   原样塞进网页会把星号、反引号露出来。这里做一层极小的行内转换：
+   先转义（HTML 注入的口子照旧堵死），再认这两种标记。 */
+function mdInline(s){
+  return esc(s)
+    .replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>')
+    .replace(/`([^`]+)`/g, '<code>$1</code>');
+}
+/* 修复形态：左=原始输入，右=同一份输入规范化之后。逐行对照。 */
+function fixViewHtml(view, title, opts){
+  const o = opts || {};
+  if (!view) return '';
+  let h = `<div class="sect"><div class="note"><b>${esc(title || '修复形态')}</b>`
+        + (o.hint === false ? ''
+           : `<span class="hint">右栏 = 把歧义写法解算干净之后的同一条输入</span>`)
+        + `</div>`;
+  if (view.changes && view.changes.length){
+    h += '<ul class="fixlist">' + view.changes.map(c => `<li>${mdInline(c)}</li>`).join('') + '</ul>';
+  } else if (view.reject){
+    h += `<div class="kv">无需改写字节 —— 这条按修复口径应当直接拒绝</div>`;
+  } else {
+    h += `<div class="kv">无需改写字节 —— 两侧策略不同，改字节消不掉它</div>`;
+  }
+  if (view.reject){
+    h += `<div class="kv warn">⚠️ 按修复口径这条请求应当<b>直接拒绝</b>；`
+       + (view.changed ? '右栏只是用来看清歧义在哪' : '这类写法规范化不出来，没有可对照的形态')
+       + `</div>`;
+  }
+  /* 只有**真改动了字节**才画对照表：没改动时两栏一模一样，那不是对照、是噪声 ——
+     "修复前后完全看不出区别"就是这么来的。这时只留上面那行说明。
+     顺带：字节确实改了但输入太长（逐行比对退化成空表）时也得说一声，不能装作没有。 */
+  if (view.changed && view.rows && view.rows.length){
+    h += '<div class="fixdiff">'
+       + '<div class="fdhead"><span>原始输入</span><span>修复后</span></div>'
+       + view.rows.map(row => {
+           const o = row.orig == null ? '' : row.orig;
+           const f = row.fixed == null ? '' : row.fixed;
+           const mark = row.tag === 'del' ? '- ' : row.tag === 'same' ? '  ' : '';
+           const mark2 = row.tag === 'add' ? '+ ' : row.tag === 'same' ? '  ' : '';
+           return `<div class="fdrow ${row.tag}"><code>${esc(mark + o)}</code>`
+                + `<code>${esc(mark2 + f)}</code></div>`;
+         }).join('')
+       + '</div>';
+  } else if (view.changed){
+    h += `<div class="note">字节有改动，但这段输入太长，没做逐行对照（改动点见上面的清单）。</div>`;
+  }
+  if (view.note) h += `<div class="note">${mdInline(view.note)}</div>`;
+  return h + '</div>';
+}
+/* ================= 修复形态（独立块，三个入口共用） =================
+   它是**确定性内核**算出来的（各领域的改写规则），和模型没有半点关系：没勾解读、
+   解读超时、模型挂了，它都该在。以前它寄生在「模型解读」卡片和证据面板里 ——
+   解读没出来就一起消失，而且勾了解读时实验报告整张卡会自动收起，东西在里面等于没有。
+   所以单起一块：默认展开、不参与"有解读就收起"那套逻辑。 */
+function fixBlocksHtml(items){
+  return (items || []).filter(x => x && x.fix_view).map(f => {
+    const name = f.domain || f.target || '';
+    const pair = (f.left || f.right) ? esc(f.left || '') + ' ↔ ' + esc(f.right || '') : '';
+    return `<article class="fixblock">
+      <div class="fixblock-hd">${f.severity ? sevBadge(f.severity) : ''}`
+      + (name ? `<span class="fx-name">${esc(name)}</span>` : '')
+      + (pair ? `<span class="fx-pair">${pair}</span>` : '')
+      + (f.kind ? `<span class="hint">${esc(f.kind)}</span>` : '')
+      + `</div>
+      ${fixViewHtml(f.fix_view, '修复形态', {hint: false})}
+    </article>`;
+  }).join('');
+}
+/*: 有分歧、但字节没得改时的统一口径 —— 三个入口共用这一句，免得各写一版。
+   不写"这几条"是为了单条选中时（扫描 / 流量接入）读着也通顺。 */
+const NO_BYTES_TO_FIX = '写法已经是规范形态 —— 分歧来自两侧**策略**不同'
+  + '（同一份合法写法，双方的接受度不一样）：改字节消不掉它，只能在实现侧对齐策略。';
+/* 「这条要不要处置」看的是**内核有没有话要说**：给了改动点，或要求直接拒绝。
+
+   为什么不拿 `changed` 当判据：`changed` 只回答"字节变了没有"，而有些处置办法本来
+   就不改字节 —— 例如 `Content-Length: abc` 规范化不出来、只能拒绝；再例如请求体里
+   的裸 LF（本工具只重写头部，得在实现侧改）。按 `changed` 筛会把这类说明整条丢掉。
+   反过来，`changed` 正好是**要不要画逐行对照表**的判据（没变的两栏一模一样）。 */
+function needsAction(f){
+  const v = f && f.fix_view;
+  return !!(v && ((v.changes && v.changes.length) || v.reject));
+}
+/* 把一块渲染进容器里；没有可改写的字节时**明确说清为什么** ——
+   一片空白分不清"没有"和"坏了"，那正是上次"看不见对比"的根因。
+   反过来也一样：把"无需改写"的东西铺成一张左右相同的表，看着像对照其实是噪声。
+   所以这里只给**真要改字节**的那些铺开，其余的用一句话交代。 */
+function renderFixCard(bodySel, statusSel, items, emptyText){
+  const body = $(bodySel);
+  if (!body) return;
+  const views = (items || []).filter(x => x && x.fix_view);
+  const need = views.filter(needsAction);
+  if (!views.length){
+    body.innerHTML = `<div class="note">${esc(emptyText || '暂无可改写的字节')}</div>`;
+  } else if (!need.length){
+    body.innerHTML = `<div class="note">${mdInline(NO_BYTES_TO_FIX)}</div>`;
+  } else {
+    body.innerHTML = fixBlocksHtml(need)
+      + (views.length > need.length
+         ? `<div class="note">另有 ${views.length - need.length} 条无需改写字节 —— `
+           + `它们已经是规范形态，分歧来自两侧策略不同，改字节消不掉。</div>`
+         : '');
+  }
+  const status = statusSel && $(statusSel);
+  if (status){
+    const nBytes = need.filter(v => v.fix_view.changed).length;
+    const nReject = need.filter(v => v.fix_view.reject).length;
+    const what = nBytes === need.length ? '需改写字节'
+               : nReject === need.length ? '需直接拒绝' : '需处置';
+    const of = views.length === need.length ? '' : '/' + views.length;
+    status.textContent = !views.length ? '无需改写'
+      : !need.length ? '无需改写字节（策略差异）'
+      : need.length + of + ' 条' + what;
+  }
+}
 const STATE_LABEL = {pending:'排队中', running:'运行中', done:'已完成',
                      failed:'失败', aborted:'已中止'};
 function levelLabel(l){ return LEVEL_LABEL[l] || l || '未知'; }
@@ -172,13 +308,24 @@ function cmpFinding(a, b){
   const la = LEVEL_RANK[a.level] == null ? 3 : LEVEL_RANK[a.level];
   const lb = LEVEL_RANK[b.level] == null ? 3 : LEVEL_RANK[b.level];
   if (la !== lb) return la - lb;
+  // 同类里再按危险等级排 —— 以前只按类别排，同类的几十条谁先谁后是随机的
+  const sa = SEVERITY_RANK[a.severity] == null ? 9 : SEVERITY_RANK[a.severity];
+  const sb = SEVERITY_RANK[b.severity] == null ? 9 : SEVERITY_RANK[b.severity];
+  if (sa !== sb) return sa - sb;
   const ca = a.controllable ? 1 : 0, cb = b.controllable ? 1 : 0;
   if (ca !== cb) return cb - ca;
   return String(a.case_id).localeCompare(String(b.case_id));
 }
+/* 最该先看的那一条（类别 → 危险等级 → 可控）。三条入口共用同一个口径：
+   结果一出来就自动选它，右边直接显示"原始输入 vs 修复后"的对照，不用先点一下。 */
+function worstFinding(list){
+  return (list && list.length) ? list.slice().sort(cmpFinding)[0] : null;
+}
 
 let scanES = null, scanJobId = '', scanFindings = [], scanSel = null, scanPocs = {};
 let scanClusters = [], scanRedundancy = 1;   // 同类归并：同一对实现 + 同一分歧类型只留一条代表
+/* 本次结果的"自证"信息：谁参与了、有没有真实产品、缓存省了多少 —— 顶部三行靠它 */
+let scanMeta = {impls: [], has_product: false, cache: {}, summary: {}, domain: ''};
 
 function scanErr(msg){
   const box = $('#scan-err');
@@ -249,16 +396,223 @@ function subscribeScan(jobId){
   };
 }
 
+/* ---------- 连线设置（接我的产品） ---------- */
+
+/* 跑法二选一：接我的产品（实测）/ 只跑内置基准（离线推演）。
+   scanLink 存"导入进来的完整连线设置"（可能含多个产品与链路顺序）；
+   没导入时按上面那几项现搭一份。 */
+let scanLink = null;
+/* 连通性检查通过时的"字段指纹" —— 字段一改就作废，必须重新检查。 */
+let scanChecked = '';
+
+function scanRunMode(){
+  const el = document.querySelector('input[name="scan-run"]:checked');
+  return el ? el.value : 'product';
+}
+function scanForm(){
+  const g = id => { const e = $('#' + id); return e ? (e.value || '').trim() : ''; };
+  return {domain: g('scan-domain') || 'http1-framing', name: g('scan-prod-name'),
+          endpoint: g('scan-endpoint'), probe_api: g('scan-probe-api'),
+          policy: g('scan-policy')};
+}
+function scanFormKey(){ return JSON.stringify(scanForm()); }
+
+/** 把界面上的几项拼成一份连线设置。导入过的话在它基础上改"产品"那一段，
+    其余（别的产品、链路顺序）原样留着 —— 不丢用户带来的信息。 */
+function linkFromForm(){
+  const f = scanForm();
+  const base = scanLink ? JSON.parse(JSON.stringify(scanLink))
+                        : {format: 1, domain: f.domain};
+  base.domain = f.domain;
+  const oldId = (base.product && base.product.id) || '';
+  const product = {id: 'product', runner: 'chain',
+                   endpoint: f.endpoint, probe_api: f.probe_api};
+  if (f.name) product.name = f.name;
+  if (f.policy) product.policy = f.policy;
+  base.product = product;
+  if (Array.isArray(base.impls) && oldId){
+    base.impls = base.impls.filter(x => !(x && x.id === oldId));
+    if (!base.impls.length) delete base.impls;
+  }
+  if (Array.isArray(base.chain) && oldId){
+    base.chain = base.chain.map(id => id === oldId ? 'product' : id);
+  }
+  return base;
+}
+
+function syncScanRunMode(){
+  const product = scanRunMode() === 'product';
+  const box = $('#scan-link-box'); if (box) box.hidden = !product;
+  const go = $('#scan-go');
+  if (go) go.textContent = product ? '开始实测' : '跑内置基准';
+  const note = $('#scan-check-note');
+  if (note && !product){
+    note.textContent = '只跑内置基准：全在进程内离线推演，不需要连任何东西。';
+  } else if (note){
+    note.textContent = '先查一遍：三盏绿灯再开跑。';
+  }
+}
+
+function renderScanLights(report){
+  const box = $('#scan-lights');
+  if (!box) return;
+  if (!report){ box.innerHTML = ''; return; }
+  if (report.error){ box.innerHTML = '<div class="err">' + esc(report.error) + '</div>'; return; }
+  box.innerHTML = (report.steps || []).map(st => {
+    const cls = st.ok ? (st.warn ? 'warn' : 'ok') : 'no';
+    const mark = st.ok ? (st.warn ? '!' : '✓') : '✕';
+    return '<div class="alert light ' + cls + '"><span class="dot">' + mark + '</span>'
+         + '<b>' + esc(st.label || '') + '</b><span class="d">' + esc(st.detail || '')
+         + '</span></div>';
+  }).join('');
+}
+
+async function loadScanPolicies(){
+  const sel = $('#scan-policy');
+  if (!sel) return;
+  const domain = ($('#scan-domain') && $('#scan-domain').value) || 'http1-framing';
+  const keep = sel.value;
+  try {
+    const d = await (await fetch('/api/scan/impls?domain=' + encodeURIComponent(domain))).json();
+    const impls = d.impls || [];
+    sel.innerHTML = '<option value="">不确定（先不校验读法）</option>'
+      + impls.map(x => `<option value="${esc(x)}">${esc(x)}</option>`).join('');
+    if (keep && impls.indexOf(keep) >= 0) sel.value = keep;
+  } catch (e) { /* 拿不到就留空，不挡开跑 */ }
+}
+
+$('#scan-check').onclick = async () => {
+  const f = scanForm();
+  $('#scan-err').innerHTML = '';
+  renderScanLights(null);
+  if (!f.endpoint || !f.probe_api){
+    $('#scan-lights').innerHTML =
+      '<div class="err">先填「产品入口地址」和「记录员地址」—— 一个说往哪发，一个说谁在记。</div>';
+    return;
+  }
+  const btn = $('#scan-check');
+  const key = scanFormKey();      // 记住"检查的是哪几个值"：飞行途中改了字段就不算通过
+  btn.disabled = true;
+  $('#scan-check-note').textContent = '正在检查…';
+  try {
+    const res = await fetch('/api/scan/link/check', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({domain: f.domain, link: linkFromForm()})
+    });
+    const d = await res.json();
+    renderScanLights(d);
+    const ok = res.ok && d.ok && scanFormKey() === key;
+    scanChecked = ok ? key : '';
+    $('#scan-check-note').textContent = d.error ? '检查没通过：' + d.error
+      : (ok ? '三盏绿灯 —— 可以开跑了。' : '有红灯：先照着上面的提示处理，再重查。');
+  } catch (err) {
+    $('#scan-check-note').textContent = fetchFailText(err);
+    scanChecked = '';
+  } finally {
+    btn.disabled = false;
+  }
+};
+
+$('#scan-import-btn').onclick = () => $('#scan-import').click();
+$('#scan-import').onchange = async () => {
+  const input = $('#scan-import');
+  const file = input.files && input.files[0];
+  input.value = '';
+  if (!file) return;
+  try {
+    const text = await file.text();
+    const res = await fetch('/api/scan/link/parse', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({filename: file.name, text})
+    });
+    const d = await res.json();
+    if (!res.ok || d.error){
+      $('#scan-adv-note').innerHTML = '<span class="bad">导入失败：' + esc(d.error || '未知错误') + '</span>';
+      return;
+    }
+    scanLink = d.settings || null;
+    const prod = (scanLink && scanLink.product) || {};
+    if ($('#scan-endpoint')) $('#scan-endpoint').value = prod.endpoint || '';
+    if ($('#scan-probe-api')) $('#scan-probe-api').value = prod.probe_api || '';
+    if ($('#scan-prod-name')) $('#scan-prod-name').value = prod.name || '';
+    if (prod.policy && $('#scan-policy')){
+      const sel = $('#scan-policy');
+      if (![...sel.options].some(o => o.value === prod.policy)){
+        sel.insertAdjacentHTML('beforeend',
+          `<option value="${esc(prod.policy)}">${esc(prod.policy)}</option>`);
+      }
+      sel.value = prod.policy;
+    }
+    if (d.domain && $('#scan-domain')) $('#scan-domain').value = d.domain;
+    // 导入 = 接产品；顺手把跑法切过去，免得导了却还在跑基准
+    const radio = document.querySelector('input[name="scan-run"][value="product"]');
+    if (radio) radio.checked = true;
+    syncScanRunMode();
+    scanChecked = '';
+    renderScanLights(null);
+    const n = d.impls || 0;
+    $('#scan-adv-note').textContent = '已导入「' + file.name + '」（共 ' + n
+      + ' 个实现）—— 上面几项已填好，记得再点一次「检查连通性」。';
+  } catch (err) {
+    $('#scan-adv-note').innerHTML = '<span class="bad">导入失败：' + esc(fetchFailReason(err)) + '</span>';
+  }
+};
+
+$('#scan-export').onclick = () => {
+  if (scanRunMode() !== 'product'){
+    $('#scan-adv-note').innerHTML =
+      '<span class="bad">当前是「只跑内置基准」，没有连线设置可导出 —— 切到「接我的产品」再导出。</span>';
+    return;
+  }
+  const data = JSON.stringify(linkFromForm(), null, 2);
+  const blob = new Blob([data], {type: 'application/json'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'ced-link-' + scanForm().domain + '.json';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  $('#scan-adv-note').textContent = '已导出当前连线设置（' + a.download + '）。';
+};
+
+function bindScanRunMode(){
+  document.querySelectorAll('input[name="scan-run"]').forEach(r => {
+    r.onchange = () => { syncScanRunMode(); scanChecked = ''; renderScanLights(null); };
+  });
+  ['scan-endpoint', 'scan-probe-api', 'scan-policy', 'scan-prod-name',
+   'scan-domain'].forEach(id => {
+    const e = $('#' + id);
+    if (e) e.addEventListener('input', () => { scanChecked = ''; });
+    if (e) e.addEventListener('change', () => { scanChecked = ''; });
+  });
+  const dom = $('#scan-domain');
+  if (dom) dom.addEventListener('change', loadScanPolicies);
+  syncScanRunMode();
+}
+
 $('#scan-go').onclick = async () => {
   if (scanES) return;
   $('#scan-err').innerHTML = '';
+  const runMode = scanRunMode();
+  let link = null;
+  if (runMode === 'product'){
+    const f = scanForm();
+    if (!f.endpoint || !f.probe_api){
+      scanErr('还差信息：产品入口地址和记录员地址都要填 —— 一个说往哪发，一个说谁在记。');
+      return;
+    }
+    if (scanChecked !== scanFormKey()){
+      scanErr('先点「检查连通性」，三盏绿灯再开跑 —— 免得跑完才发现连的是别的东西。');
+      return;
+    }
+    link = linkFromForm();
+  }
   $('#scan-go').disabled = true;
   const body = {
-    domain: $('#scan-domain') ? $('#scan-domain').value : 'http1-framing',
+    domain: ($('#scan-domain') ? $('#scan-domain').value : 'http1-framing'),
     mode: $('#scan-mode').value,
     limit: numOr($('#scan-limit'), 60),
     seed: numOr($('#scan-seed'), 42),
-    topology: $('#scan-topology').value.trim()
+    link: link
   };
   try {
     const res = await fetch('/api/scan/start', {
@@ -278,7 +632,9 @@ $('#scan-go').onclick = async () => {
     $('#scan-log').innerHTML = '';
     $('#scan-hint').textContent = '任务 ' + d.job_id + ' 运行中';
     $('#scan-abort').disabled = false;
-    scanLog('已启动任务 ' + d.job_id);
+    const vcard = $('#scan-verdict'); if (vcard) vcard.hidden = true;
+    scanLog('已启动任务 ' + d.job_id
+      + (link ? '（接我的产品：' + link.product.endpoint + '）' : '（只跑内置基准）'));
     subscribeScan(d.job_id);
   } catch (err) {
     scanErr(fetchFailText(err));
@@ -314,7 +670,7 @@ async function loadScanJobs(){
     $('#jobs-count').textContent = jobs.length;
     if (!jobs.length){ box.innerHTML = '<div class="note">暂无扫描任务</div>'; return; }
     box.innerHTML = '<table><tr><th>任务号</th><th>状态</th><th>用例</th>' +
-      '<th>分歧</th><th>安全级</th><th></th></tr>' + jobs.map(j => {
+      '<th>读法不一致</th><th>有安全影响</th><th></th></tr>' + jobs.map(j => {
         const c = j.live ? ' class="clickable"' : '';
         const n = v => v == null ? '—' : v;
         return `<tr${c} data-id="${esc(j.job_id)}">
@@ -349,9 +705,17 @@ async function loadScanResult(jobId){
     scanPocs = {};
     scanClusters = r.clusters || [];
     scanRedundancy = r.redundancy || 1;
+    scanMeta = {impls: r.impls || [], has_product: !!r.has_product,
+                cache: r.cache || {}, summary: r.summary || {},
+                domain: r.domain || '', rejected: r.rejected_cases || 0};
     (r.pocs || []).forEach(p => { scanPocs[p.case_id] = p; });
+    renderScanVerdict();
+    // 自动选中最强的那条：否则右边一直停在"← 请选择左侧发现条目"，
+    // 修复形态就藏在一次点击之后了
+    scanSel = worstFinding(scanFindings);
     renderScanEvList();
-    renderScanEvidence(null);
+    renderScanEvidence(scanSel);
+    renderScanFixCard();
     loadScanMetrics(jobId);
     loadScanHeatmap(jobId);
   } catch (err) {
@@ -382,8 +746,11 @@ async function loadScanMetrics(jobId){
     box.innerHTML =
       metricCard('用例数', iv(m.total_cases), '本次扫描实际执行的候选用例数') +
       metricCard('实现对', iv(m.jobs), '实际比对的实现组合数（axis 模式 = 定向轴 + 未覆盖实现的交叉对照）') +
-      metricCard('分歧数', iv(m.divergences), '同一份字节两侧结构理解不一致的条数（分级判定前的原始差分）') +
-      metricCard('安全级', iv(m.security), '分歧中由攻击者可控字节承载、具备安全影响结构性前提的条数') +
+      metricCard('读法不一致', iv(m.divergences), '同一份字节两侧读出来不是同一回事的条数（分级判定前的原始差分）') +
+      metricCard('有安全影响', iv(m.security), '读法不一致里，由攻击者可控字节承载、结构性前提成立的条数（类别，不等于漏洞）') +
+      metricCard('危险等级', severityBreakdown(m.by_severity) || '—',
+        '等级 = 类型上限（这类分歧最好能有多严重）+ 证据强度（实机测量 / 有量化错位 / 量化不出来）。'
+        + '严重 = 实机测量到错位；高 = 类型上限且确实错位；中 = 未量化；低 = 仅疑点；信息 = 仅诊断字段') +
       metricCard('安全占比', metricPct(m.security_share), 'security 级发现 / 分歧总数') +
       metricCard('消融定位率', metricPct(m.controllable_rate), 'security 级发现中通过消融实验定位到承载字节的比例') +
       metricCard('唯一化压缩比', metricPct(m.unique_case_ratio), '唯一 case_id 数 / 分歧数，反映同一份字节的重复计入程度') +
@@ -455,11 +822,23 @@ function grouping(){
   return !!(box && box.checked && scanClusters.length);
 }
 
+/* 修复形态独立块（扫描）：跟着左侧选中的那条走 —— 一次扫描可能有几百条，
+   全铺出来没人看，所以只给"正在看的那一条"。 */
+function renderScanFixCard(){
+  renderFixCard('#scan-fix-body', '#scan-fixcard-s',
+    scanSel ? [scanSel] : [],
+    scanSel ? '这条分歧没有可改写的字节（两侧策略不同，改字节消不掉它）'
+            : '选中左侧任意一条发现，这里给出它的改写方案 —— 内核给的，不依赖模型');
+}
+
 function filteredFindings(){
   const filt = $('#scan-filter').value;
   const q = $('#scan-search').value.trim().toLowerCase();
   let items = scanFindings.filter(f => {
     if (filt === 'security' && f.level !== 'security') return false;
+    // 等级筛选取"及以上"：选了"中"就不该把"高"藏起来
+    if (SEVERITY_RANK[filt] !== undefined
+        && (SEVERITY_RANK[f.severity] ?? 9) > SEVERITY_RANK[filt]) return false;
     if (!q) return true;
     const hay = [f.case_id, f.left, f.right, f.kind, f.axis]
       .map(v => String(v == null ? '' : v).toLowerCase()).join(' ');
@@ -470,6 +849,56 @@ function filteredFindings(){
     items = items.filter(f => { const c = clusterOf(f, map); return !!c && c.case_id === f.case_id; });
   }
   return items;
+}
+
+/* 实测 / 推演：一条发现的两侧里有没有真实产品参与。这个标记跟判定内核无关 ——
+   它只回答"这条结论是实机看的，还是离线推的"，免得推演被当成实机结论。 */
+function measuredTag(f){
+  return f && f.measured
+    ? '<span class="badge measured" title="这条分歧有一侧是真实产品实测得来">实测</span>'
+    : '<span class="badge inferred" title="两侧都是内置参照实现，离线推演得来">推演</span>';
+}
+
+/* 顶部固定的三行：A 侧是谁在哪、B 侧是谁几个、读法不一致几条 + 最严重档位。
+   没有真实产品参与时，明写"下面是疑点、不是耦合结论"。 */
+function renderScanVerdict(){
+  const card = $('#scan-verdict'), body = $('#scan-verdict-body');
+  if (!card || !body) return;
+  card.hidden = false;
+  const impls = scanMeta.impls || [];
+  const measured = impls.filter(i => i.measured);
+  const bench = impls.filter(i => !i.measured);
+  const sevCounts = {};
+  (scanFindings || []).forEach(f => { sevCounts[f.severity] = (sevCounts[f.severity] || 0) + 1; });
+  const worst = worstSeverity(sevCounts);
+  const cache = scanMeta.cache || {};
+  const aText = measured.length
+    ? measured.map(i => esc(i.name || i.id) + '（' + esc(i.endpoint || '—') + '）').join('、')
+    : '<span class="warn">本次没有真实产品参与</span>';
+  const bNames = bench.slice(0, 4).map(i => esc(i.name || i.id)).join('、');
+  const bMore = bench.length > 4 ? ' 等' : '';
+  let h = '';
+  h += '<div class="kv"><span class="k">A 侧（实测）</span>' + aText
+     + (measured.length ? '<span class="hint">　产品发一条、记录员看它怎么读</span>' : '') + '</div>';
+  h += '<div class="kv"><span class="k">B 侧（离线）</span>'
+     + (bench.length
+        ? esc(bNames) + bMore + '<span class="hint">　共 ' + bench.length + ' 个内置参照实现</span>'
+        : '无')
+     + '</div>';
+  h += '<div class="kv"><span class="k">读法不一致</span>'
+     + (scanFindings || []).length + ' 条'
+     + (worst ? '，最严重：' + sevBadge(worst) : '')
+     + (cache.trips ? '<span class="hint">　实测动作 ' + cache.trips + ' 次，缓存省下 '
+        + (cache.hits || 0) + ' 次</span>' : '')
+     + '</div>';
+  h += scanMeta.has_product
+    ? '<div class="alert alert-info">带「实测」的发现有一侧是真实产品；带「推演」的只有内置参照实现参与。</div>'
+    : '<div class="alert alert-warn">本次没有真实产品参与 —— 下面是疑点，不是耦合结论（两侧都是内置参照实现，离线推演得来）。</div>';
+  if (scanMeta.rejected){
+    h += '<div class="note">另有 ' + scanMeta.rejected
+       + ' 条被产品按自身策略拒绝、观测不到 —— 已跳过，没有拿它合成结论。</div>';
+  }
+  body.innerHTML = h;
 }
 
 function renderScanEvList(){
@@ -494,7 +923,7 @@ function renderScanEvList(){
       : '';
     return `<div class="evitem${sel}" data-i="${i}">
       <div class="id">${esc(f.case_id)}
-        <span class="badge ${esc(f.level)}">${esc(levelLabel(f.level))}</span>${times}</div>
+        <span class="badge ${esc(f.level)}">${esc(levelLabel(f.level))}</span>${measuredTag(f)}${times}</div>
       <div class="meta">${esc(f.axis)}　${esc(f.left)} ↔ ${esc(f.right)}</div>
       <div class="meta">${esc(f.kind)}${f.controllable ? '　<span class="bad">可控</span>' : ''}</div>
     </div>`;
@@ -503,6 +932,7 @@ function renderScanEvList(){
     scanSel = scanFindings[parseInt(el.dataset.i, 10)];
     renderScanEvList();
     renderScanEvidence(scanSel);
+    renderScanFixCard();          // 修复形态独立块跟着选中的那条换
   });
 }
 
@@ -518,7 +948,7 @@ function renderScanEvidence(f){
   const obs = (f.observations && Object.keys(f.observations).length) ? f.observations : (f.diffs || {});
   let h = `<div class="finding ${f.level === 'security' ? '' : 'unknown'}">
     <h3>${esc(f.case_id)}
-      <span class="badge ${esc(f.level)}">${esc(levelLabel(f.level))}</span>
+      <span class="badge ${esc(f.level)}">${esc(levelLabel(f.level))}</span>${measuredTag(f)}
       <span style="color:var(--dim);font-weight:400;font-size:12px">（${esc(f.kind)}）</span></h3>
     <div class="kv"><span class="k">对照</span>${esc(f.left)} ↔ ${esc(f.right)}
       　<span class="k">分歧轴</span>${esc(f.axis)}</div>
@@ -545,6 +975,8 @@ function renderScanEvidence(f){
        <div class="note">→ 该分歧由攻击者可直接发送的字节承载</div>`
     : `<div class="kv warn">未知（未定位到可控承载）</div>`;
   h += `</div>`;
+
+  /* 修复形态挪到「修复形态」独立卡里了，这里不再重复 */
 
   /* 判定 */
   h += `<div class="sect"><div class="note"><b>判定</b></div>
@@ -661,6 +1093,9 @@ async function loadAssistStatus(){
 /* ---------- 单页结构：标签页已去掉 ----------
    扫描任务列表开页就加载。 */
 loadScanJobs();
+/* 产品实测面板：跑法开关、读法下拉、连通性检查的绑定 —— 开页就装好 */
+bindScanRunMode();
+loadScanPolicies();
 /* 模型状态开页就查一次：侧栏左下角要显示它，检测页的「使用模型解读」也要按它决定能不能勾 */
 loadAssistStatus();
 /* 「设置…」小窗：原生 dialog，控件沿用原 id，既有读写逻辑一行没动 */
@@ -735,6 +1170,7 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
               refuted:'<span class="badge compatibility">未证实</span>',
               unverifiable:'<span class="badge unknown">证不了</span>'}[f.verdict] || '';
     }
+    if (f.severity) return sevBadge(f.severity);
     return {security:'<span class="badge security">安全级</span>',
             unknown:'<span class="badge unknown">疑点</span>',
             compatibility:'<span class="badge compatibility">兼容性</span>'}[f.level] || '';
@@ -751,17 +1187,24 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
     return findings.filter(f => wanted.indexOf(f.level || f.verdict) >= 0);
   }
   function renderLevels(){
-    const counts = {};
+    /* 先按**危险等级**分档（内核给的判定），外部格式的核验结果（已证实/证不了）
+       仍按原来的三态显示 —— 它们没有等级。 */
+    const counts = {}, other = {};
     findings.forEach(f => {
-      const key = f.level || f.verdict || '—';
-      counts[key] = (counts[key] || 0) + 1;
+      if (f.severity) counts[f.severity] = (counts[f.severity] || 0) + 1;
+      else {
+        const key = f.verdict || f.level || '—';
+        other[key] = (other[key] || 0) + 1;
+      }
     });
-    const label = {security:'安全级', unknown:'疑点', compatibility:'兼容性',
-                   confirmed:'已证实', refuted:'未证实', unverifiable:'证不了'};
-    const cls = {security:'bad', confirmed:'bad', unknown:'warn', unverifiable:'warn',
-                 refuted:'good', compatibility:''};
-    el('dt-levels').innerHTML = Object.keys(counts).map(key =>
-      `<span class="lv ${cls[key] || ''}">${esc(label[key] || key)} ${counts[key]}</span>`).join('');
+    const label = {confirmed:'已证实', refuted:'未证实', unverifiable:'证不了',
+                   security:'安全级', unknown:'疑点', compatibility:'兼容性'};
+    const cls = {confirmed:'bad', unverifiable:'warn', refuted:'good'};
+    let html = SEVERITY_ORDER.filter(k => counts[k]).map(k =>
+      `<span class="lv sev-${esc(k)}">${esc(sevLabel(k))} ${counts[k]}</span>`).join('');
+    html += Object.keys(other).map(key =>
+      `<span class="lv ${cls[key] || ''}">${esc(label[key] || key)} ${other[key]}</span>`).join('');
+    el('dt-levels').innerHTML = html;
   }
   function renderFindings(){
     renderLevels();
@@ -780,19 +1223,24 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
         <div class="meta">${badge(f)}　${esc(String(f.kind || f.detail || '')).slice(0, 44)}</div></div>`
     ).join('');
     box.querySelectorAll('.evitem').forEach(node => node.onclick = () => {
-      box.querySelectorAll('.evitem').forEach(x => x.classList.remove('sel'));
-      node.classList.add('sel');
-      showEvidence(findings[parseInt(node.dataset.i, 10)]);
+      selectFinding(findings[parseInt(node.dataset.i, 10)]);
     });
   }
   window.__dtLoad = arr => {                // 工作区侧栏：切换回某次检测的发现集合
-    findings = arr; renderFindings();
+    findings = arr; renderFindings(); renderFixCardHere();
     renderInterpret();
     foldFlow(!hasInterpret());               // 有解读就收起过程，没有就照常展开
     const rs = el('dt-reportcard-s');
     if (rs) rs.textContent = findings.length ? (findings.length + ' 条发现') : '无发现';
   };
   let shownFinding = null;
+  function selectFinding(f){
+    if (!f) return;
+    const i = findings.indexOf(f);
+    el('dt-list').querySelectorAll('.evitem').forEach(
+      x => x.classList.toggle('sel', parseInt(x.dataset.i, 10) === i));
+    showEvidence(f);
+  }
   function showEvidence(f){
     if (!f) return;
     shownFinding = f;
@@ -804,6 +1252,9 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
     if (f.detail) h += `<div class="kv"><span class="k">说明</span>${esc(f.detail)}</div>`;
     if (f.effect) h += `<div class="kv"><span class="k">安全后果</span>${esc(f.effect)}</div>`;
     if (f.fix) h += `<div class="kv"><span class="k">修复建议</span>${esc(f.fix)}</div>`;
+    if (f.quantified) h += `<div class="kv"><span class="k">量化</span>${esc(f.quantified)}</div>`;
+    /* 修复形态挪到上面那张独立卡里了（三个入口同一处），这里不再重复 */
+
     const interp = f.interpret;
     if (interp && interp.ok){
       h += `<div class="sect"><div class="note"><b>模型解读（非判定）</b>
@@ -849,12 +1300,21 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
         + (it.cwe_hint ? `<div class="kv"><span class="k">CWE 建议</span>${esc(it.cwe_hint)}</div>` : '')
         + (it.fix ? `<div class="kv"><span class="k">修复建议</span>${esc(it.fix)}</div>` : '')
         + `<div class="interp-note">以上是<b>模型的转述</b>，不是判定 —— 级别、CWE 与证据仍以上面内核给出的为准。`
-        + `模型：${esc(it.model || '—')}</div>
-        </div></article>`;
+        + `模型：${esc(it.model || '—')}</div>`
+        + `</div></article>`;
     }).join('');
     sect.hidden = false;
   }
   function hasInterpret(){ return findings.some(f => f.interpret && f.interpret.ok); }
+  /* 修复形态独立块：手动检测一次最多 5 条发现，全铺出来（不用点）。
+     它**不看** interpret —— 模型有没有产出、勾没勾，跟这块没关系。 */
+  function renderFixCardHere(){
+    renderFixCard('#dt-fix-body', '#dt-fixcard-s', findings,
+      findings.length
+        ? '这些结论都没有可改写的字节（例如未证实 / 证不了，或分歧不是字节造成的）'
+        : '这里给出「原始输入 vs 修复后」的逐行对照 —— 内核给的方案，不依赖模型');
+  }
+
   function foldFlow(open){
     const flow = el('dt-flow'), rep = el('dt-reportcard');
     if (flow) flow.open = open;
@@ -870,7 +1330,7 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
       pre.textContent = lines.join('\n');
       pre.scrollTop = pre.scrollHeight;
     } else if (ev.type === 'finding'){
-      findings.push(ev); renderFindings();
+      findings.push(ev); renderFindings(); renderFixCardHere();
     } else if (ev.type === 'interpret'){
       const key = String(ev.key || '');
       const target = findings.find(f => String(f.case_id || f.target || '') === key);
@@ -882,8 +1342,11 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
         if (hasInterpret()) foldFlow(false);                 // 解读出来了就把过程收起来
       }
     } else if (ev.type === 'done'){
-      closeStream(); renderFindings(); setChain('done', '已完成');
+      closeStream(); renderFindings(); renderFixCardHere();
+      setChain('done', '已完成');
       stopTicker();
+      // 没人点过就自动选最强的那条 —— 修复形态不该藏在一次点击之后
+      if (!shownFinding) selectFinding(worstFinding(findings));
       if (ev.result && ev.result.report) lastReport = ev.result.report;
       el('dt-reportcard-s').textContent = findings.length
         ? (findings.length + ' 条发现') : '无发现';
@@ -908,6 +1371,7 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
     el('dt-reportcard-s').textContent = '运行中…';
     foldFlow(true);                          // 新一轮先展开过程；解读出来再自动收起
     el('dt-report').textContent = ''; el('dt-list').innerHTML = '';
+    renderFixCard('#dt-fix-body', '#dt-fixcard-s', [], '跑起来后这里会出现改写方案');
     el('dt-evidence').className = 'note'; el('dt-evidence').textContent = '← 请选择左侧条目';
     initDag(); renderFindings();
     setChain('running', '运行中'); el('dt-elapsed').textContent = ''; startTicker();
@@ -1084,6 +1548,12 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
     el('set-scan-mode').value = s.scan.mode;
     el('set-scan-limit').value = s.scan.limit;
     el('set-scan-seed').value = s.scan.seed;
+    // 设置里的扫描默认值同步到「产品实测」面板上那几个控件（那是真正开跑的地方）
+    if (el('scan-domain') && s.scan.domain) el('scan-domain').value = s.scan.domain;
+    if (el('scan-mode') && s.scan.mode) el('scan-mode').value = s.scan.mode;
+    if (el('scan-limit')) el('scan-limit').value = s.scan.limit;
+    if (el('scan-seed')) el('scan-seed').value = s.scan.seed;
+    if (window.loadScanPolicies) window.loadScanPolicies();
     el('set-detect-llm').checked = !!(s.detect && s.detect.interpret);
     // 检测页那个勾选框按设置预填（解读默认关，勾了才会有模型那一段）
     el('dt-llm').checked = !!(s.detect && s.detect.interpret);
@@ -1195,15 +1665,25 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
       statCard('已分析', s.analyzed, '已完成差分检测的请求数') +
       statCard('跳过', s.skipped, '静态资源 / 分析队列饱和 / 无法提取观测对象') +
       statCard('HTTPS 隧道', s.tunnels, '未解密的 CONNECT 隧道（未启用本地证书解密，或客户端拒绝本地证书）') +
-      statCard('分歧', s.divergences, '已分析请求的分歧总数（跨 5 个领域）') +
-      statCard('安全级请求', s.security_requests, '存在 security 级分歧的请求数');
+      statCard('分歧', s.divergences, '分歧**对数**：一条请求会与该领域几十对参照实现'
+        + '逐一比对，所以这个数字不等于"问题数"；本次涉及 '
+        + (s.divergent_requests == null ? 0 : s.divergent_requests)
+        + ' / ' + s.analyzed + ' 条已分析请求') +
+      statCard('危险等级', severityBreakdown(s.by_severity) || '—',
+        '按**请求**分档：一条请求只按它最严重的那一档计一次（严重 = 实机测量到错位；'
+        + '高 = 类型上限且确实错位；中 = 未量化；低 = 仅疑点）。'
+        + '这样才不会把同一条请求被几十对参照实现重复计数读成"这么多漏洞"')
+      + statCard('安全级请求', s.security_requests, '存在 security 级分歧的请求数');
   }
   function verdictBadge(r){
     if (r.tunnel) return '<span class="badge">HTTPS 隧道</span>';
     if (r.skip) return '<span class="badge">跳过</span>';
     const a = r.analysis;
     if (!a) return '<span class="badge">分析中…</span>';
-    if (a.security) return '<span class="badge security">安全级 ' + a.security + '</span>';
+    if (a.severity){
+      return sevBadge(a.severity)
+        + (a.security ? ' <span class="badge">安全级 ' + a.security + '</span>' : '');
+    }
     if (a.divergences) return '<span class="badge unknown">疑点 ' + a.divergences + '</span>';
     return '<span class="badge compatibility">已检测·一致</span>';
   }
@@ -1222,6 +1702,10 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
   function matchesFilter(r){
     const mode = (box('cap-filter') || {}).value || 'all';
     if (mode === 'security' && !(r.analysis && r.analysis.security)) return false;
+    if (SEVERITY_RANK[mode] !== undefined
+        && (SEVERITY_RANK[r.analysis && r.analysis.severity] ?? 9) > SEVERITY_RANK[mode]) {
+      return false;
+    }
     if (mode === 'divergent' && !(r.analysis && r.analysis.divergences)) return false;
     if (mode === 'skipped' && !(r.skip || r.tunnel)) return false;
     const query = ((box('cap-search') || {}).value || '').trim().toLowerCase();
@@ -1273,7 +1757,7 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
      定位用 seq 而不是 case_id：HTTPS 隧道那条根本没有 case_id，同一条字节重复出现时
      多条记录也共用一个 case_id —— 只有 seq 是每条记录唯一的。 */
   const ZERO_STATS = {requests: 0, analyzed: 0, skipped: 0, tunnels: 0,
-                      security_requests: 0, divergences: 0};
+                      security_requests: 0, divergences: 0, divergent_requests: 0};
   async function postForget(path, payload){
     box('cap-err').innerHTML = '';
     try {
@@ -1315,7 +1799,7 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
     if (!rows.length) return;
     if (!window.confirm('清空网页上的这份列表？\n\n'
         + '只是清掉这份列表：开了「记录到文件」时，JSONL 台账里的原始记录一条都不会动。')) return;
-    rows = []; sel = null;
+    rows = []; sel = null; renderCapFixCard(null);
     // seq 是跟服务端对齐的游标，不回退：回退会把刚清掉的记录又拉回来
     box('cap-evidence').className = 'note';
     box('cap-evidence').textContent = '← 请选择左侧条目';
@@ -1334,8 +1818,10 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
       h += `<div class="sect"><div class="note"><b>各领域</b></div>`;
       Object.keys(a.domains).forEach(name => {
         const row = a.domains[name];
+        const grades = severityBreakdown(row.severities);
         h += `<div class="kv"><span class="k">${esc(name)}</span>对照 ${row.pairs} 对 · `
            + `分歧 ${row.divergences} · 安全级 ${row.security}`
+           + (grades ? `　${esc(grades)}` : '')
            + (row.note ? `　<span class="badge">${esc(row.note)}</span>` : '') + `</div>`;
       });
       h += `</div>`;
@@ -1345,11 +1831,13 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
       h += `<div class="sect"><div class="note"><b>最强的一条｜领域 ${esc(top.domain)}</b></div>
         <div class="kv"><span class="k">对照</span>${esc(top.left)} ↔ ${esc(top.right)}　<span class="k">类型</span>${esc(top.kind)}</div>
         <div class="kv"><span class="k">CWE</span>${esc(top.cwe || '—')}　<span class="k">场景</span>${esc(top.scenario || '—')}</div>
+        <div class="kv"><span class="k">危险等级</span>${esc(sevLabel(top.severity) || '—')}</div>
         <div class="kv"><span class="k">判定理由</span>${esc(top.reason)}</div>
         <div class="kv"><span class="k">消融证据</span>${esc(top.ablation || '—')}</div>
         <div class="kv"><span class="k">安全后果</span>${esc(top.effect || '—')}</div>
-        <div class="kv"><span class="k">修复建议</span>${esc(top.fix || '—')}</div>
-        <div class="boundary">已证实 · 内核产出</div>
+        <div class="kv"><span class="k">修复建议</span>${esc(top.fix || '—')}</div>`
+        + (top.quantified ? `<div class="kv"><span class="k">量化</span>${esc(top.quantified)}</div>` : '')
+        + `<div class="boundary">已证实 · 内核产出</div>
         <div class="toolbar"><button class="btn btn-primary" id="cap-poc">生成端到端 PoC</button>
           <span class="note" id="cap-poc-out"></span></div>
         <div id="cap-poc-body"></div>
@@ -1379,9 +1867,25 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
       <pre>${esc(d.raw_preview || '（已裁剪）')}</pre></div>`;
     return h;
   }
+  /* 修复形态独立块：跟着选中的那条记录走（与手动检测、产品实测同一套渲染）。
+     它**不看** interpret —— 模型有没有产出、勾没勾，跟这块没关系。 */
+  function renderCapFixCard(d){
+    const top = (d && d.analysis && d.analysis.top) || null;
+    const item = (d && d.fix_view) ? {
+      fix_view: d.fix_view, severity: top ? top.severity : '',
+      domain: top ? top.domain : '', left: top ? top.left : '',
+      right: top ? top.right : '', kind: top ? top.kind : ''} : null;
+    renderFixCard('#cap-fix-body', '#cap-fixcard-s', item ? [item] : [],
+      d ? '这条请求没有可改写的字节（没有分歧，或分歧改字节消不掉）'
+        : '选中左侧任意一条请求，这里给出它的改写方案 —— 内核给的，不依赖模型');
+  }
   async function detail(caseId){
     const ev = box('cap-evidence');
-    if (!caseId){ ev.className = 'note'; ev.textContent = '这条是 HTTPS 隧道（未拆包），没有证据可看'; return; }
+    if (!caseId){
+      ev.className = 'note'; ev.textContent = '这条是 HTTPS 隧道（未拆包），没有证据可看';
+      renderCapFixCard(null);
+      return;
+    }
     ev.className = '';
     ev.innerHTML = '<div class="note">加载中…</div>';
     try {
@@ -1390,6 +1894,7 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
         + (viewId ? '&session=' + encodeURIComponent(viewId) : ''))).json();
       if (d.error){ ev.className = 'note'; ev.textContent = d.error; return; }
       ev.innerHTML = evHtml(d);
+      renderCapFixCard(d);
       const btn = box('cap-poc');
       if (btn) btn.onclick = () => poc(caseId);
     } catch(err){ ev.className = 'note'; ev.textContent = fetchFailText(err); }
@@ -1442,7 +1947,8 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
         <div class="interp-q">
           <span class="qt">${esc(it.method)} ${esc(it.host)}${esc(it.path || '')}</span>
           <span class="qb">${it.level === 'security'
-            ? '<span class="badge security">安全级</span>' : '<span class="badge unknown">疑点</span>'}
+            ? sevBadge(it.severity) || '<span class="badge security">安全级</span>'
+            : '<span class="badge unknown">疑点</span>'}
             <span class="badge">${esc(it.domain || '')}</span></span>
         </div>
         <div class="interp-a">
@@ -1857,7 +2363,7 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
   const MODE_HEAD = {
     manual: ['手动检测', '产品串联处的耦合误差检测 · 判定由确定性引擎给出，全部证据可复核'],
     capture: ['流量接入', '本机代理接管浏览器 / 客户端流量，逐条进同一条检测链路，数据只留本机'],
-    scan: ['矩阵扫描', '用内置语料在所选领域上主动搜索定向分歧，命中项自动产出证据链与最小复现样本'],
+    scan: ['产品实测', '把真实产品接进来一条条喂过去，看它跟内置参照实现读出来的是不是同一回事；命中项自动产出证据链与最小复现样本'],
     check: ['自检与案例库', '引擎有效性回归 · 47 条已知案例的判定依据']
   };
   function setMode(m){
@@ -1997,6 +2503,11 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
   function sessionBadge(s){
     const sum = s.summary || {};
     if (s.running) return '<span class="badge">进行中</span>';
+    const worst = worstSeverity(sum.by_severity);
+    if (worst) {
+      return sevBadge(worst) + ' <span class="badge">'
+        + (sum.security_requests || 0) + ' 条安全级</span>';
+    }
     if (sum.security_requests) {
       return '<span class="badge security">安全级 ' + sum.security_requests + '</span>';
     }

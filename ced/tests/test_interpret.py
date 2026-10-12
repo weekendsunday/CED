@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from ced import detect
 from ced.assist.client import LlmConfig, LlmUnavailable
-from ced.assist.interpret import (INTERPRET_KEYS, Interpretation, build_prompt,
+from ced.assist.interpret import (INTERPRET_KEYS, build_prompt,
                                   interpret, parse_interpretation)
 
 CL_TE = (b"POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length: 48\r\n"

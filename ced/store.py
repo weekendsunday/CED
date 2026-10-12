@@ -6,7 +6,6 @@
 """
 from __future__ import annotations
 
-import base64
 import json
 import sqlite3
 import time
@@ -157,22 +156,6 @@ def stats(conn: sqlite3.Connection) -> dict:
     kinds = dict(conn.execute(
         "SELECT kind, COUNT(*) FROM verdict GROUP BY kind").fetchall())
     return {"cases": cases, "by_level": levels, "by_kind": kinds}
-
-
-def dump_finding(conn: sqlite3.Connection, case_id: str) -> dict | None:
-    """按 case_id 取回一条完整发现（含最小化样本），便于二次复现。"""
-    row = conn.execute(
-        "SELECT d.divergence_id, d.left_impl, d.right_impl, d.diffs, v.level, v.kind, "
-        "f.minimized, f.chain_evidence FROM divergence d "
-        "JOIN verdict v ON v.divergence_id = d.divergence_id "
-        "LEFT JOIN finding f ON f.divergence_id = d.divergence_id "
-        "WHERE d.case_id = ? LIMIT 1", (case_id,)).fetchone()
-    if not row:
-        return None
-    return {"divergence_id": row[0], "left": row[1], "right": row[2],
-            "diffs": json.loads(row[3]), "level": row[4], "kind": row[5],
-            "minimized_b64": base64.b64encode(row[6]).decode() if row[6] else None,
-            "chain_evidence": row[7]}
 
 
 # --------------------------------------------------------------------- 攻击场景 PoC

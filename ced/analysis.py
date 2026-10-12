@@ -6,11 +6,11 @@ CLI、网页、报告都从这里取结果，避免各写一遍导致漂移。
 from __future__ import annotations
 
 import base64
-import itertools
 
-from .classify.upgradability import judge
+from .classify.upgradability import finalize, judge
 from .differ.comparator import compare, diff_keys
 from .pipeline import case_id_of
+from .report.fixview import fix_view
 
 
 def analyze(payload: bytes, left_id: str, right_id: str,
@@ -36,12 +36,21 @@ def analyze(payload: bytes, left_id: str, right_id: str,
 
     kind = adapter.classify([d.key for d in div.diffs])
     verdict = judge(div, kind, adapter, evaluator)
+    quantified = None
+    if verdict.is_security:
+        quantified = adapter.quantify(payload, left_id, right_id, div=div)
+    # 量化结果参与定级（实测→严重；有错位→类型上限；量化不了→降档）
+    finalize(verdict, adapter, quantified)
 
     result.update({
         "diverged": True,
         "diff_keys": div.keys,
         "kind": kind,
         "level": verdict.level,
+        "severity": verdict.severity,
+        "severity_label": verdict.severity_label,
+        "quantified": (quantified.describe if quantified else ""),
+        "fix_view": fix_view(adapter.name, payload),
         "reason": verdict.reason,
         "controllable": verdict.controllable,
         "ablation": verdict.ablation,
@@ -65,16 +74,3 @@ def analyze(payload: bytes, left_id: str, right_id: str,
 
     return result
 
-
-def all_pairs(impl_ids) -> list[tuple[str, str]]:
-    return list(itertools.combinations(list(impl_ids), 2))
-
-
-def analyze_pairs(payload: bytes, pairs, evaluator, adapter, *,
-                  minimize: bool = False) -> list[dict]:
-    return [analyze(payload, l, r, evaluator, adapter, minimize=minimize)
-            for l, r in pairs]
-
-
-def decode_b64(text: str) -> bytes:
-    return base64.b64decode(text)

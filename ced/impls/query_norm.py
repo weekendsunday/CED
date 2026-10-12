@@ -69,6 +69,9 @@ class QueryResult:
     reason: str = "OK"
     #: 归一化后的查询串（最关键）—— 同一段字节被判成不同参数集时这里必然不同
     norm_query: str = ""
+    #: 归一化后的 (名字, 取值) 序列 —— 取值都已解码。修复形态要靠它**精确**重写
+    #: （只从 ``norm_query`` 字符串反解会在取值含 ``&``/``=`` 时出错）。
+    pairs: list = field(default_factory=list)
     #: 结果里的参数名（保序；开了排序则已排序）
     keys: list = field(default_factory=list)
     #: 归一化后的参数个数
@@ -213,6 +216,7 @@ def parse_query(payload: bytes, policy: QueryPolicy) -> QueryResult:
 
     return QueryResult(ok=True, status=200, reason="OK",
                        norm_query=norm_query,
+                       pairs=list(kept),
                        keys=[name for name, _ in kept],
                        param_count=len(kept),
                        dup_kept=_dup_kept(normed, kept))

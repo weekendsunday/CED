@@ -30,12 +30,13 @@ from typing import Callable
 
 from .adapters import get as get_adapter
 from .adapters import names as domain_names
-from .classify.upgradability import judge
-from .contracts import Finding
+from .classify.upgradability import finalize, judge
+from .contracts import SEVERITY_RANK, Finding, severity_label, worst_severity
 from .differ.comparator import compare
 from .intake import CONFIRMED, REFUTED, UNVERIFIABLE, load, verify
 from .pipeline import plan_jobs
 from .probe import Evaluator
+from .report.fixview import fix_view
 from .scenario.poc import build_poc
 
 #: DAG 的固定节点（前端据此预画图，事件只更新节点状态）
@@ -193,6 +194,45 @@ def _interpret_lines(item: dict) -> list[str]:
 
 # --------------------------------------------------------------------------- 原始请求字节
 
+def _severity_line(security: int, counts: dict[str, int]) -> str:
+    """判定阶段的进度文案：安全级 + 五档分布。"""
+    if not counts:
+        return f"安全级 {security} 条（其余为疑点/兼容性）"
+    parts = "、".join(f"{severity_label(name)} {counts[name]}"
+                      for name in sorted(counts,
+                                         key=lambda n: SEVERITY_RANK.get(n, 99)))
+    return f"安全级 {security} 条　危险等级：{parts}"
+
+
+def _fix_lines(item: dict) -> list[str]:
+    """把「修复形态 vs 原始输入」渲染成报告里的对照块。"""
+    view = item.get("fix_view")
+    if not view:
+        return []
+    out = ["", "**修复形态（右栏 = 规范化后的同一条请求）**", ""]
+    if view["changes"]:
+        for change in view["changes"]:
+            out.append(f"- {change}")
+    else:
+        out.append("- 无需改写字节：这条分歧来自两侧策略不同")
+    if view.get("reject"):
+        out.append("- ⚠️ 按修复口径这条请求应当**直接拒绝**（规范形态只是用来看清歧义在哪）")
+    out.append("")
+    out.append("```diff")
+    for row in view["rows"]:
+        if row["tag"] == "same":
+            out.append(f"  {row['orig']}")
+        elif row["tag"] == "del":
+            out.append(f"- {row['orig']}")
+        else:
+            out.append(f"+ {row['fixed']}")
+    out.append("```")
+    out.append("")
+    if view.get("note"):
+        out.append(view["note"])
+    return out
+
+
 def _run_raw(raw: bytes, domains: list[str] | None, rep: _Reporter,
              result: Detection,
              interpreter: Callable[[dict], dict] | None = None) -> None:
@@ -205,17 +245,19 @@ def _run_raw(raw: bytes, domains: list[str] | None, rep: _Reporter,
         payload = adapter.extract(raw)
         if not payload:
             result.domains[name] = {"pairs": 0, "divergences": 0, "security": 0,
-                                    "kinds": {}, "note": "该领域从这份字节里取不到观测对象"}
+                                    "kinds": {}, "severities": {},
+                                    "note": "该领域从这份字节里取不到观测对象"}
         slices.append((name, adapter, payload))
     rep.stage("extract", "done", f"{sum(1 for _, _, p in slices if p)} 个领域取到了观测对象")
 
-    rep.line("| 领域 | 对照对数 | 分歧 | 安全级 | 类型 |")
-    rep.line("|---|---|---|---|---|")
+    rep.line("| 领域 | 对照对数 | 分歧 | 安全级 | 最高危险等级 | 类型 |")
+    rep.line("|---|---|---|---|---|---|")
     rep.stage("diff", "running")
     total_pairs = total_div = total_sec = 0
+    total_sev: dict[str, int] = {}
     for name, adapter, payload in slices:
         if not payload:
-            rep.line(f"| `{name}` | 0 | 0 | 0 | 取不到观测对象 |")
+            rep.line(f"| `{name}` | 0 | 0 | 0 | — | 取不到观测对象 |")
             continue
         specs = adapter.specs()
         impl_ids = [s.impl_id for s in specs]
@@ -224,6 +266,7 @@ def _run_raw(raw: bytes, domains: list[str] | None, rep: _Reporter,
         case_id = hashlib.sha1(payload).hexdigest()[:8]
         found = sec = 0
         kinds: dict[str, int] = {}
+        severities: dict[str, int] = {}
         hit: dict | None = None
         for left_id, right_id, axis in jobs:
             left = evaluator(left_id, payload)
@@ -236,9 +279,14 @@ def _run_raw(raw: bytes, domains: list[str] | None, rep: _Reporter,
             kinds[kind] = kinds.get(kind, 0) + 1
             rep.stage("judge", "running", f"{name}：第 {found} 条分歧做消融")
             verdict = judge(div, kind, adapter, evaluator)
+            quantified = None
             if verdict.is_security:
                 sec += 1
-            rank = {"security": 0, "unknown": 1, "compatibility": 2}.get(verdict.level, 9)
+                quantified = adapter.quantify(payload, left_id, right_id, div=div)
+            # 量化决定等级档位（实测→严重；有错位→类型上限；量化不了→降档）
+            finalize(verdict, adapter, quantified)
+            severities[verdict.severity] = severities.get(verdict.severity, 0) + 1
+            rank = SEVERITY_RANK.get(verdict.severity, 9)
             if hit is None or rank < hit["_rank"]:
                 poc = None
                 if verdict.is_security:
@@ -251,15 +299,27 @@ def _run_raw(raw: bytes, domains: list[str] | None, rep: _Reporter,
                                "script": built.script, "chain_desc": built.chain_desc,
                                "sample_len": built.sample_len}
                 hit = {"_rank": rank, "domain": name, "case_id": case_id,
-                       "level": verdict.level, "kind": kind, "left": left_id,
+                       "level": verdict.level, "severity": verdict.severity,
+                       "kind": kind, "left": left_id,
                        "right": right_id, "reason": verdict.reason,
                        "cwe": verdict.cwe or "", "scenario": verdict.scenario or "",
                        "ablation": verdict.ablation or "", "effect": verdict.effect or "",
-                       "fix": verdict.fix or "", "poc": poc}
+                       "fix": verdict.fix or "",
+                       "quantified": (quantified.describe if quantified else ""),
+                       # 修复形态：**拿原始输入**（不是领域切片）来对照，
+                       # 用户看到的才是"我贴进去的那份请求"改完长什么样
+                       "fix_view": fix_view(name, raw),
+                       "poc": poc}
         total_pairs += len(jobs); total_div += found; total_sec += sec
+        for key, value in severities.items():
+            total_sev[key] = total_sev.get(key, 0) + value
         result.domains[name] = {"pairs": len(jobs), "divergences": found,
-                                "security": sec, "kinds": kinds}
+                                "security": sec, "kinds": kinds,
+                                "severities": severities}
+        top_sev = min((key for key, n in severities.items() if n),
+                      key=lambda key: SEVERITY_RANK.get(key, 99), default="")
         rep.line(f"| `{name}` | {len(jobs)} | {found} | {sec} | "
+                 f"{severity_label(top_sev) if top_sev else '—'} | "
                  f"{'、'.join(f'{k}×{v}' for k, v in sorted(kinds.items())) or '—'} |")
         if hit is not None:
             hit.pop("_rank", None)
@@ -267,24 +327,38 @@ def _run_raw(raw: bytes, domains: list[str] | None, rep: _Reporter,
             rep.stage("diff", "running", f"{name}：发现 {found} 条分歧")
             rep.finding(hit)
     rep.stage("diff", "done", f"对照 {total_pairs} 对，分歧 {total_div} 条")
-    rep.stage("judge", "done", f"安全级 {total_sec} 条（其余为 unknown/compatibility）")
+    rep.stage("judge", "done", _severity_line(total_sec, total_sev))
+
+    # 发现按危险等级从高到低排（同档保持领域顺序）—— 报告与界面都先说最要紧的那条
+    result.findings.sort(key=lambda item: SEVERITY_RANK.get(item.get("severity", ""), 99))
 
     result.summary = {"input_items": 1, "pairs": total_pairs,
                       "divergences": total_div, "security": total_sec,
+                      "by_severity": total_sev,
+                      "severity": worst_severity(total_sev),
                       "confirmed": 0, "refuted": 0, "unverifiable": 0}
     result.chain.append(f"逐对差分：{total_pairs} 对 → 分歧 {total_div} 条")
-    result.chain.append(f"消融判定：安全级 {total_sec} 条，未定位到承载者的一律 unknown")
+    result.chain.append(
+        "消融判定：" + _severity_line(total_sec, total_sev)
+        + "；未定位到承载者的一律按疑点处理")
 
     _interpret_findings(result.findings, interpreter, rep)
 
     # 报告：把每条发现的原因/证据写全（实时报告已经逐行吐过，这里补细节）
     secure = [f for f in result.findings if f["level"] == "security"]
+    # 疑点也要给修复形态：没升级只说明"证据不足以定级"，不代表这份输入不必改。
+    # 以前它们连一行细节都没有 —— 报告里只有一张汇总表，读者看不到该动哪几个字节。
+    doubts = [f for f in result.findings if f["level"] != "security"]
     if secure:
         rep.line("")
-        rep.line("## 安全级发现（每条都由消融定位到承载者）")
+        rep.line("## 安全级发现（结构前提成立 · 按危险等级从高到低 · 每条都由消融定位到承载者）")
+        rep.line("")
+        rep.line("> `安全级`是**类别**（结构性前提成立，不等于漏洞），方括号里才是"
+                 "**危险等级**（这条有多严重）。")
         for item in secure:
             rep.line("")
-            rep.line(f"### `{item['case_id']}` · {item['domain']} · "
+            rep.line(f"### [{severity_label(item.get('severity'))}] "
+                     f"`{item['case_id']}` · {item['domain']} · "
                      f"{item['left']} ↔ {item['right']}")
             rep.line(f"- 类型：`{item['kind']}`　CWE：{item['cwe'] or '—'}"
                      f"　场景：{item['scenario'] or '—'}")
@@ -292,6 +366,8 @@ def _run_raw(raw: bytes, domains: list[str] | None, rep: _Reporter,
             rep.line(f"- 消融证据：{item['ablation'] or '—'}")
             rep.line(f"- 安全后果：{item['effect'] or '—'}")
             rep.line(f"- 修复建议：{item['fix'] or '—'}")
+            for extra in _fix_lines(item):
+                rep.line(extra)
             for extra in _interpret_lines(item):
                 rep.line(extra)
         rep.stage("poc", "done", f"{len(secure)} 条安全级发现可直接生成端到端 PoC")
@@ -299,6 +375,21 @@ def _run_raw(raw: bytes, domains: list[str] | None, rep: _Reporter,
         rep.line("")
         rep.line("## 没有安全级发现 —— 这份输入在 5 个领域里没有可升级的结构性分歧")
         rep.stage("poc", "done", "无需生成 PoC（宁可不升级，也不夸大）")
+    if doubts:
+        rep.line("")
+        rep.line("## 疑点（未升级：结构前提不成立 / 未定位到可控承载者）")
+        rep.line("")
+        rep.line("> 疑点不等于没问题：这里说的是**证据不足以定级**，改动清单照样给。")
+        for item in doubts:
+            rep.line("")
+            rep.line(f"### [{severity_label(item.get('severity'))}] "
+                     f"`{item['case_id']}` · {item['domain']} · "
+                     f"{item['left']} ↔ {item['right']}")
+            rep.line(f"- 类型：`{item['kind']}`　危险等级："
+                     f"{severity_label(item.get('severity')) or '—'}")
+            rep.line(f"- 判定理由：{item['reason'][:_MAX_REASON]}")
+            for extra in _fix_lines(item):
+                rep.line(extra)
 
 
 # --------------------------------------------------------------------------- 外部工具结果
@@ -309,32 +400,58 @@ def _run_external(text: str, kind: str, hypotheses: list, domains: list[str] | N
     result.chain.append(f"解析外部发现：{len(hypotheses)} 条假设（{kind}）")
     rep.stage("extract", "running", f"解析 {kind} → {len(hypotheses)} 条假设")
     rep.stage("extract", "done", f"{len(hypotheses)} 条假设就绪")
-    rep.line("| # | 结论 | 目标 | 领域 | 级别 | 说明 |")
+    rep.line("| # | 结论 | 目标 | 领域 | 危险等级 | 说明 |")
     rep.line("|---|---|---|---|---|---|")
     rep.stage("diff", "running", "逐条喂进同一条 oracle 链")
     verdicts = verify(hypotheses, domains=domains)
     counts = {CONFIRMED: 0, REFUTED: 0, UNVERIFIABLE: 0}
+    severities: dict[str, int] = {}
+    shown: list[dict] = []
     for index, item in enumerate(verdicts, 1):
         counts[item.verdict] = counts.get(item.verdict, 0) + 1
+        if item.severity:
+            severities[item.severity] = severities.get(item.severity, 0) + 1
         label = {CONFIRMED: "已证实", REFUTED: "未证实",
                  UNVERIFIABLE: "证不了"}.get(item.verdict, item.verdict)
         note = (item.reason or item.detail or "")[:_MAX_REASON]
         rep.line(f"| {index} | **{label}** | `{item.hypothesis.target}` | "
-                 f"`{item.domain or '—'}` | {item.level or '—'} | {note} |")
+                 f"`{item.domain or '—'}` | "
+                 f"{severity_label(item.severity) if item.severity else '—'} | {note} |")
         payload = {"verdict": item.verdict, "target": item.hypothesis.target,
                    "domain": item.domain, "level": item.level, "kind": item.kind,
+                   "severity": item.severity,
+                   "severity_label": severity_label(item.severity) if item.severity else "",
                    "reason": item.reason, "evidence": item.evidence,
+                   "quantified": item.quantified,
                    "detail": item.detail, "left": item.left, "right": item.right,
+                   # 修复形态：与扫描/手动检测同一条口径 —— 拿喂进去的那份待测对象对照
+                   "fix_view": (fix_view(item.domain, item.payload)
+                                if item.payload and item.domain else None),
                    "source": item.hypothesis.source}
         result.findings.append(payload)
         rep.finding(payload)
+        if item.verdict == CONFIRMED and payload["fix_view"]:
+            shown.append(payload)
     rep.stage("diff", "done", f"三态：已证实 {counts[CONFIRMED]} / 未证实 {counts[REFUTED]} / "
                               f"证不了 {counts[UNVERIFIABLE]}")
     rep.stage("judge", "done", "判定全部由内核给出，不由报告方自述")
     _interpret_findings(result.findings, interpreter, rep)
+    if shown:
+        # 与"安全级发现"一节同一套写法：改动清单 + 逐行对照
+        rep.line("")
+        rep.line("## 修复形态（右栏 = 规范化后的同一条输入）")
+        for item in shown:
+            rep.line("")
+            rep.line(f"### [{severity_label(item['severity'])}] "
+                     f"`{item['target']}` · {item['domain']} · "
+                     f"{item['left']} ↔ {item['right']}")
+            for extra in _fix_lines(item):
+                rep.line(extra)
     rep.stage("poc", "done", "已证实的条目可用最小复现样本复现（见各条的领域）")
     result.summary = {"input_items": len(hypotheses), "pairs": 0, "divergences": 0,
                       "security": counts[CONFIRMED],
+                      "by_severity": severities,
+                      "severity": worst_severity(severities),
                       "confirmed": counts[CONFIRMED], "refuted": counts[REFUTED],
                       "unverifiable": counts[UNVERIFIABLE]}
     result.chain.append(

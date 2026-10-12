@@ -19,7 +19,8 @@ import socket
 import time
 import urllib.request
 
-from ..contracts import Observation, ProbeRejected, ProbeUnreachable
+from ..contracts import (Observation, ProbeRejected, ProbeUnreachable,
+                         parse_addr)
 
 SEND_TIMEOUT = 10.0     # 发字节 + 读响应的超时
 VIEW_WAIT = 3.0         # 等探针记录视角的超时（前置没回响应时用）
@@ -34,9 +35,11 @@ LIVENESS_PAYLOAD = (b"GET / HTTP/1.1\r\nHost: ced-liveness-check\r\n"
                     b"Connection: close\r\n\r\n")
 
 
-def _parse_addr(addr: str) -> tuple[str, int]:
-    host, _, port = addr.rpartition(":")
-    return host or "127.0.0.1", int(port)
+def _step(key: str, label: str, ok: bool, detail: str,
+          *, warn: bool = False) -> dict:
+    """自检的一步。``warn`` = 灯是绿的，但话得说清楚（例如"无法校验"）。"""
+    return {"key": key, "label": label, "ok": bool(ok), "detail": detail,
+            "warn": bool(warn)}
 
 
 def _send_raw(addr: tuple[str, int], payload: bytes, *,
@@ -81,8 +84,8 @@ class ChainEvaluator:
     """通过"前置 → 探针"观测链路。``probe_api`` 是前置后面那个探针的控制口。"""
 
     def __init__(self, front: str, probe_api: str) -> None:
-        self.front = _parse_addr(front)
-        self.api = _parse_addr(probe_api)
+        self.front = parse_addr(front)
+        self.api = parse_addr(probe_api)
         #: 这个前置吃不吃"客户端半关闭"那一套。None/True 起手先试快路径，
         #: 一旦发现前置既没转发也没回响应，就改成普通客户端模式（不半关闭）并**记住**，
         #: 后续用例不再白试一遍 —— 真 nginx 只多花一次连接，替身前置仍走 4ms 快路径。
@@ -91,10 +94,114 @@ class ChainEvaluator:
     # ---------------------------------------------------------------- 控制口
 
     def _api(self, path: str, method: str = "GET") -> bytes:
-        url = f"http://{self.api[0]}:{self.api[1]}{path}"
+        url = self._url(path)
         req = urllib.request.Request(url, method=method)
         with urllib.request.urlopen(req, timeout=SEND_TIMEOUT) as resp:
             return resp.read()
+
+    def _url(self, path: str) -> str:
+        return f"http://{self.api[0]}:{self.api[1]}{path}"
+
+    def identity(self, timeout: float = 3.0) -> dict | None:
+        """问记录员"你是谁"（自报领域 + 读法）。
+
+        连不上、超时、或碰上不认识这个查询的旧版探针 → None（如实报
+        "无法校验"，绝不替它编一个身份）。用短超时：这只是起任务前的
+        一次核对，不该把界面卡住。
+        """
+        raw = self._health_raw(timeout)
+        if raw is None:
+            return None
+        try:
+            data = json.loads(raw)
+        except ValueError:
+            return None
+        return data if isinstance(data, dict) else None
+
+    def _health_raw(self, timeout: float = 3.0) -> bytes | None:
+        """取一次 /health 的原始响应；连不上/超时 → None。"""
+        req = urllib.request.Request(self._url("/health"))
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return resp.read()
+        except Exception:                  # noqa: BLE001 —— 连不上就是"校验不了"
+            return None
+
+    # ---------------------------------------------------------------- 连通性自检
+
+    def self_check(self, expected_domain: str = "",
+                   expected_policy: str = "") -> dict:
+        """界面上的「检查连通性」：问身份 → 清记录 → 试发一条。
+
+        三步全绿才建议开跑。**这里只回答问题，不替用户下结论**：
+        旧版记录员答不出身份时明确写"无法校验"，而不是假装核过了。
+        填了「记录员的读法」时，它自报的读法对不上也是一盏红灯 ——
+        读法写错会让整轮数字挂着一个不对的名字。
+        """
+        steps: list[dict] = []
+
+        raw = self._health_raw()
+        if raw is None:
+            steps.append(_step("identity", "问记录员身份", False,
+                               f"{self.api[0]}:{self.api[1]} 没回应 —— "
+                               f"记录员没起、或地址/端口不对"))
+        else:
+            try:
+                ident = json.loads(raw)
+            except ValueError:
+                ident = None
+            reported = str((ident or {}).get("domain") or "")
+            said_policy = str((ident or {}).get("policy") or "")
+            if not reported:
+                steps.append(_step("identity", "问记录员身份", True,
+                                   "连上了，但它是旧版记录员：不报领域，无法校验",
+                                   warn=True))
+            elif expected_domain and reported != expected_domain:
+                steps.append(_step("identity", "问记录员身份", False,
+                                   f"它自报的领域是「{reported}」，"
+                                   f"而这次要跑的是「{expected_domain}」—— "
+                                   f"不是一回事，跑出来的数字没有意义"))
+            elif expected_policy and said_policy and said_policy != expected_policy:
+                steps.append(_step("identity", "问记录员身份", False,
+                                   f"它自报的读法是「{said_policy}」，"
+                                   f"而这里写着「{expected_policy}」—— "
+                                   f"两边得对上，否则数字挂着一个不对的名字"))
+            else:
+                steps.append(_step("identity", "问记录员身份", True,
+                                   f"领域 {reported}、读法 "
+                                   f"{said_policy or '未自报'}"))
+
+        try:
+            self.reset()
+            steps.append(_step("reset", "清空已有记录", True, "记录员视角已清空"))
+        except Exception as exc:           # noqa: BLE001 —— 如实报失败原因
+            steps.append(_step("reset", "清空已有记录", False,
+                               f"清不掉：{exc}"))
+
+        ok, detail = self._try_probe()
+        steps.append(_step("probe", "试发一条，看记录员收不收得到", ok, detail))
+        return {"ok": all(s["ok"] for s in steps), "steps": steps}
+
+    def _try_probe(self) -> tuple[bool, str]:
+        """发一条最小正常请求，看记录员收不收得到（前置吃哪套收尾方式也在这里定）。"""
+        modes = [self._half_close] + ([False] if self._half_close else [])
+        last_response = b""
+        for index, half_close in enumerate(modes):
+            try:
+                self.reset()
+                last_response = _send_raw(self.front, LIVENESS_PAYLOAD,
+                                          half_close=half_close)
+            except OSError as exc:
+                return False, f"连不上产品入口 {self.label}：{exc}"
+            if self._await_view(LIVENESS_PAYLOAD, last_response) is not None:
+                self._half_close = half_close
+                return True, f"入口 {self.label} 的请求已转发到记录员"
+            if index == 0 and not last_response:
+                continue
+            break
+        return False, (
+            f"记录员没看到这条请求：{self.label} 收到后既没转发、也没回响应"
+            f"（产品入口地址填错了，或这个产品拒绝转发）")
 
     def healthy(self) -> bool:
         try:

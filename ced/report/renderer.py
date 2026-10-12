@@ -10,9 +10,10 @@ from __future__ import annotations
 import base64
 import json
 
-from ..contracts import LEVEL_SECURITY
-from ..scenario import build_poc, build_pocs
+from ..contracts import SEVERITY_ORDER, severity_label
+from ..scenario import build_pocs
 from .cluster import cluster, cluster_payload, redundancy
+from .fixview import fix_view
 
 #: repr 截断上限 —— 一条请求不该有 8KB 以上的可读表示；超了说明输入不是单条请求
 REPR_LIMIT = 8192
@@ -40,14 +41,39 @@ def _quant_cell(poc) -> str:
     return f"{quant.label}：{body}"
 
 
+def measured_ids(result) -> set[str]:
+    """参与了**实测**的实现 id（观测来自真实产品）。
+
+    定义只有一处：``impl_brief`` 里 ``runner`` 是 chain / socket 才算实测。
+    "A 侧实测、B 侧离线"这句话能不能说、每条发现该标"实测"还是"推演",
+    都看这一个集合。
+    """
+    return {str(i.get("id")) for i in (getattr(result, "impls", None) or [])
+            if i.get("measured")}
+
+
+def is_measured(result, divergence) -> bool:
+    """这条发现是不是**实测**得来的（两侧里有一侧是真实产品）。"""
+    measured = measured_ids(result)
+    return (divergence.left.impl_id in measured
+            or divergence.right.impl_id in measured)
+
+
 def summary_of(result) -> dict:
-    """级别/类型分布 —— 报告、控制台、SSE 完成事件共用同一份口径。"""
+    """等级/类别/类型分布 —— 报告、控制台、SSE 完成事件共用同一份口径。"""
     by_level: dict[str, int] = {}
+    by_severity: dict[str, int] = {}
     by_kind: dict[str, int] = {}
+    n_measured = 0
     for f in result.findings:
         by_level[f.verdict.level] = by_level.get(f.verdict.level, 0) + 1
+        name = f.verdict.severity
+        by_severity[name] = by_severity.get(name, 0) + 1
         by_kind[f.verdict.kind] = by_kind.get(f.verdict.kind, 0) + 1
-    return {"by_level": by_level, "by_kind": by_kind}
+        if is_measured(result, f.divergence):
+            n_measured += 1
+    return {"by_level": by_level, "by_severity": by_severity,
+            "by_kind": by_kind, "measured": n_measured}
 
 
 def render_markdown(result, *, domain: str = "http1-framing",
@@ -65,12 +91,22 @@ def render_markdown(result, *, domain: str = "http1-framing",
         out.append(f"- 前置拒绝、不可观测而跳过的用例：**{rejected}**"
                    f"（不合成观测；真实前置对畸形请求返回 4xx 属正常行为）")
     out.append(f"- 耦合误差：{len(result.divergences)}　"
-               f"其中安全级：{len(result.security)}")
+               f"其中安全级（结构前提成立）：{len(result.security)}")
     out.append("")
 
-    out.append("## 分级统计")
+    out.append("## 危险等级")
     out.append("")
-    out.append("| 级别 | 数量 |")
+    out.append("> 等级 = **类型上限**（这类分歧最好情况下有多严重，领域知识）+ **证据强度**"
+               "（实机测量 / 有量化错位 / 量化不出来）。")
+    out.append("> `安全级`只说明「结构性前提成立」，不等于漏洞；等级才回答「有多严重」。")
+    out.append("")
+    out.append("| 等级 | 数量 |")
+    out.append("|---|---|")
+    for name in SEVERITY_ORDER:
+        if stats["by_severity"].get(name):
+            out.append(f"| {severity_label(name)} | {stats['by_severity'][name]} |")
+    out.append("")
+    out.append("| 类别 | 数量 |")
     out.append("|---|---|")
     for level in ("security", "unknown", "compatibility"):
         if stats["by_level"].get(level):
@@ -110,10 +146,11 @@ def render_markdown(result, *, domain: str = "http1-framing",
                f"（冗余 **{len(result.findings) / len(clusters):.1f}×**）。"
                f"完整清单仍在 JSON 与结果库里。")
     out.append("")
-    out.append("| 级别 | 链路 | 类型 | 条数 | 代表 |")
+    out.append("| 等级 | 链路 | 类型 | 条数 | 代表 |")
     out.append("|---|---|---|---|---|")
     for item in clusters:
-        out.append(f"| {item.level} | {item.left} ↔ {item.right} | `{item.kind}` | "
+        out.append(f"| {severity_label(item.level)} | {item.left} ↔ {item.right} "
+                   f"| `{item.kind}` | "
                    f"{item.count} | `{item.case_id}` |")
     out.append("")
 
@@ -122,7 +159,7 @@ def render_markdown(result, *, domain: str = "http1-framing",
     for item in clusters:
         f = item.representative
         v = f.verdict
-        out.append(f"### [{v.level}] `{f.case_id}` — {v.kind}"
+        out.append(f"### [{v.severity_label}] `{f.case_id}` — {v.kind}"
                    + (f"　（同类共 {item.count} 条）" if item.count > 1 else ""))
         out.append("")
         out.append(f"- 对照：**{f.divergence.left.impl_id}** ↔ "
@@ -159,6 +196,42 @@ def render_markdown(result, *, domain: str = "http1-framing",
             out.append(f"- 链路量化：{f.chain_evidence}")
             out.append("")
 
+        view = fix_view(getattr(result, "domain", "") or domain,
+                        f.divergence.payload)
+        if view is not None:
+            # 只有真要画对照表时才提"右栏"：字节没变的情况（只能拒绝、
+            # 或说明只涉及实现侧）根本没有右栏可看。
+            shows_table = bool(view["changed"] and view["rows"])
+            out.append("**修复形态**" + ("（右栏 = 规范化后的同一条请求）"
+                                        if shows_table else ""))
+            out.append("")
+            for change in view["changes"] or ["无需改写字节：这条分歧来自两侧策略不同"]:
+                out.append(f"- {change}")
+            if view["reject"]:
+                out.append("- ⚠️ 按修复口径这条请求应当**直接拒绝**"
+                           + ("，规范形态只是用来看清歧义在哪"
+                              if view["changed"] and view["rows"] else
+                              "（这类写法规范化不出来，没有可对照的形态）"))
+            out.append("")
+            # 字节没变就不摆对照表：两栏一模一样，那不叫对照、叫噪声
+            # （看着像"修复没生效"，其实这条根本没有可改的字节）。
+            if view["changed"] and view["rows"]:
+                out.append("```diff")
+                for row in view["rows"]:
+                    if row["tag"] == "same":
+                        out.append(f"  {row['orig']}")
+                    elif row["tag"] == "del":
+                        out.append(f"- {row['orig']}")
+                    else:
+                        out.append(f"+ {row['fixed']}")
+                out.append("```")
+                out.append("")
+            elif view["changed"]:
+                out.append("（字节有改动，但这段输入太长，没做逐行对照。）")
+                out.append("")
+            out.append(view["note"])
+            out.append("")
+
         poc = poc_by_case.get(f.case_id)
         if poc is not None:
             out.append(f"**攻击场景**：{poc.title}"
@@ -183,7 +256,10 @@ def render_markdown(result, *, domain: str = "http1-framing",
 
     out.append("---")
     out.append("")
-    out.append("> `security` 级 = 结构性分歧 ∧ 由攻击者可直接发送的字节承载（结构性前提成立，不等于已实机利用）。")
+    out.append("> `security` 级 = 结构性分歧 ∧ 由攻击者可直接发送的字节承载"
+               "（结构性前提成立，不等于已实机利用）。")
+    out.append("> **危险等级**在它之上再分五档：严重（实机测量到错位）＞高（类型上限且"
+               "确实错位）＞中（未量化）＞低（仅疑点）＞信息（仅诊断字段）。")
     out.append("> 消融实验未能定位承载者的分歧一律标为 `unknown`，不作结论。")
     return "\n".join(out)
 
@@ -200,6 +276,8 @@ def result_payload(result) -> dict:
             "left": div.left.impl_id,
             "right": div.right.impl_id,
             "level": f.verdict.level,
+            "severity": f.verdict.severity,
+            "severity_label": f.verdict.severity_label,
             "kind": f.verdict.kind,
             "reason": f.verdict.reason,
             "controllable": f.verdict.controllable,
@@ -218,6 +296,10 @@ def result_payload(result) -> dict:
             "minimized_repr": (_pretty(f.minimized)
                                if f.minimized is not None else None),
             "chain_evidence": f.chain_evidence,
+            # 实测 / 推演：这条发现的两侧里有没有真实产品参与观测。
+            # 结果页据此在每条发现旁标注，不让"离线推演"看着像"实机结论"。
+            "measured": is_measured(result, div),
+            "fix_view": fix_view(getattr(result, "domain", ""), div.payload),
         }
         if keys:
             # 证据视图要的是"两侧完整观测并排"，而不只是差异字段
@@ -225,11 +307,21 @@ def result_payload(result) -> dict:
                                     for k in keys}
         findings.append(item)
 
+    impls = list(getattr(result, "impls", None) or [])
+    measured = measured_ids(result)
     return {
         "total_cases": result.total_cases,
         "jobs": result.jobs,
+        "domain": getattr(result, "domain", ""),
         "compare_keys": list(keys),
         "rejected_cases": getattr(result, "rejected_cases", 0),
+        # 结果页顶部那三行全靠这里：A 侧是谁在哪、B 侧是谁几个、有没有真实产品参与。
+        "impls": impls,
+        "measured_impls": sorted(measured),
+        "has_product": bool(measured),
+        # 观测缓存的本轮账：真实动作跑了几次、省了几次（接产品时最能看出效果）
+        "cache": {"hits": int(getattr(result, "cache_hits", 0) or 0),
+                  "trips": int(getattr(result, "cache_trips", 0) or 0)},
         "summary": summary_of(result),
         "redundancy": redundancy(result.findings),
         "clusters": cluster_payload(result.findings),

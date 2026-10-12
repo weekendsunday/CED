@@ -34,9 +34,12 @@ class Verification:
     left: str = ""       # 该领域的左实现
     right: str = ""
     level: str = ""      # security | unknown | compatibility
+    severity: str = ""   # 五档危险等级（档位由类型上限 + 证据强度定，与 level 正交）
     kind: str = ""
     reason: str = ""
     evidence: str = ""   # 消融证据
+    quantified: str = "" # 链路量化的描述（量化不出来时为空）
+    payload: bytes | None = None   # 实际喂进去的待测对象（用来算"修复形态"）
     minimized_b64: str | None = None
     detail: str = ""     # 人话说明（尤其是 unverifiable/refuted 的原因）
 

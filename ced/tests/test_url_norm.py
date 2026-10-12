@@ -24,7 +24,7 @@ sys.path.insert(0, str(ROOT))
 from ced import regression
 from ced.adapters.url_norm import UrlNormAdapter
 from ced.contracts import ImplSpec
-from ced.differ.comparator import compare, diff_keys, diverges
+from ced.differ.comparator import compare, diff_keys
 from ced.impls import url_reference
 from ced.impls.path_norm import normalize_target
 from ced.mutate import url_axes
@@ -127,9 +127,9 @@ class TestAblation(unittest.TestCase):
         transform = dict(url_axes.ABLATIONS)[target_label]
         candidate = transform(payload)
         self.assertNotEqual(candidate, payload)
-        self.assertFalse(diverges(evaluator(left, candidate),
-                                  evaluator(right, candidate),
-                                  ADAPTER.compare_keys))
+        self.assertFalse(diff_keys(evaluator(left, candidate),
+                                   evaluator(right, candidate),
+                                   ADAPTER.compare_keys))
 
 
 class TestQuantify(unittest.TestCase):

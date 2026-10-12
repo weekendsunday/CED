@@ -27,13 +27,3 @@ def diff_keys(left: Observation, right: Observation,
               compare_keys: tuple[str, ...]) -> list[str]:
     """只取差异字段名（判定器与最小化复用）。"""
     return [k for k in compare_keys if left.get(k) != right.get(k)]
-
-
-def diverges(left: Observation, right: Observation,
-             compare_keys: tuple[str, ...]) -> bool:
-    """两侧是否在结构字段上有分歧。
-
-    判定器的消融实验与各领域适配器的消融实验共用这一个判据 ——
-    "分歧是否还在"只有一种定义。
-    """
-    return bool(diff_keys(left, right, compare_keys))

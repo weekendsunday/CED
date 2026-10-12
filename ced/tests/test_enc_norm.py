@@ -26,7 +26,7 @@ from ced import regression
 from ced.adapters import enc_norm as enc_adapter_module  # noqa: F401
 from ced.adapters.enc_norm import EncNormAdapter
 from ced.contracts import ImplSpec
-from ced.differ.comparator import compare, diff_keys, diverges
+from ced.differ.comparator import compare, diff_keys
 from ced.impls import enc_reference
 from ced.impls.enc_norm import interpret
 from ced.mutate import enc_axes
@@ -129,9 +129,9 @@ class TestAblation(unittest.TestCase):
         transform = dict(enc_axes.ABLATIONS)[target]
         candidate = transform(b"%c0%afadmin")
         self.assertNotEqual(candidate, b"%c0%afadmin")
-        self.assertFalse(diverges(evaluator("enc-strict", candidate),
-                                  evaluator("enc-overlong-accept", candidate),
-                                  ADAPTER.compare_keys))
+        self.assertFalse(diff_keys(evaluator("enc-strict", candidate),
+                                   evaluator("enc-overlong-accept", candidate),
+                                   ADAPTER.compare_keys))
 
     def test_combining_mark_is_located_for_nfc(self):
         evaluator, div = self._divergence(b"cafe%CC%81",

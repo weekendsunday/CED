@@ -11,7 +11,9 @@
 """
 from __future__ import annotations
 
-#: 级别排序：数字越小越严重。决定一格（以及一整条发现列表）里谁代表最严重级别。
+from .contracts import SEVERITY_RANK, worst_severity
+
+#: 类别排序：数字越小越严重。决定一格（以及一整条发现列表）里谁代表最严重类别。
 _LEVEL_RANK = {"security": 0, "unknown": 1, "compatibility": 2}
 
 
@@ -31,6 +33,13 @@ def scan_metrics(result, *, elapsed: float | None = None) -> dict:
         if level in by_level:
             by_level[level] += 1
     security = by_level["security"]
+
+    #: 按**危险等级**分档（五档）—— 前端的汇总卡用它，不再只报一个"安全级"数字：
+    #: 同一个"结构性前提成立"里，跨目录与编码口径本来就不该同权重。
+    by_severity: dict[str, int] = {}
+    for f in findings:
+        name = f.verdict.severity
+        by_severity[name] = by_severity.get(name, 0) + 1
 
     # 分母为 0 时各比率都有各自的"空"约定，不是统一给 0 —— 见模块 docstring
     security_share = round(security / divergences, 4) if divergences else 0.0
@@ -61,7 +70,9 @@ def scan_metrics(result, *, elapsed: float | None = None) -> dict:
         "jobs": jobs,
         "divergences": divergences,
         "by_level": by_level,
+        "by_severity": by_severity,
         "security": security,
+        "severity": worst_severity(by_severity),
         "security_share": security_share,
         "controllable_rate": controllable_rate,
         "unique_case_ratio": unique_case_ratio,
@@ -110,12 +121,15 @@ def matrix_heatmap(result, impl_ids: list[str]) -> dict:
                 continue
             level = min((f.verdict.level for f in items),
                         key=lambda lv: _LEVEL_RANK.get(lv, 3))
+            severity = min((f.verdict.severity for f in items),
+                           key=lambda sv: SEVERITY_RANK.get(sv, 9))
             kind = next((f.verdict.kind for f in items if f.verdict.kind), "")
             row.append({
                 "count": count,
                 "security": sum(1 for f in items
                                 if f.verdict.level == "security"),
                 "level": level,
+                "severity": severity,
                 "kind": kind,
                 "case_ids": [f.case_id for f in items[:5]],
             })

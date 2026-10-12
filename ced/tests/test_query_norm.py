@@ -27,7 +27,7 @@ from ced.adapters import query_norm  # noqa: F401,E402
 from ced.adapters.query_norm import QueryNormAdapter
 from ced import regression
 from ced.contracts import ImplSpec
-from ced.differ.comparator import compare, diff_keys, diverges
+from ced.differ.comparator import compare, diff_keys
 from ced.impls import query_reference
 from ced.impls.query_norm import parse_query
 from ced.mutate import query_axes
@@ -125,9 +125,9 @@ class TestAblation(unittest.TestCase):
         transform = dict(query_axes.ABLATIONS)[target_label]
         candidate = transform(payload)
         self.assertNotEqual(candidate, payload)
-        self.assertFalse(diverges(evaluator(left, candidate),
-                                  evaluator(right, candidate),
-                                  ADAPTER.compare_keys))
+        self.assertFalse(diff_keys(evaluator(left, candidate),
+                                   evaluator(right, candidate),
+                                   ADAPTER.compare_keys))
 
     def test_semicolon_to_amp_ablates_separator_axis(self):
         payload = b"a=1;b=2"

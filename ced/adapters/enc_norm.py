@@ -17,12 +17,13 @@ from __future__ import annotations
 
 import random
 
-from ..contracts import ImplSpec, Quantified
-from ..classify.upgradability import still_diverges
+from .. import httpmsg
+from ..contracts import HardenedRequest, ImplSpec, Quantified
+from ..classify.upgradability import ablate_via
 from ..impls import enc_reference
 from ..impls.enc_norm import interpret
 from ..mutate import enc_axes
-from .base import http_request_fields
+from .base import HARDEN_NOTE, HARDEN_NOOP_NOTE, http_request_fields
 from .registry import register
 
 # ---- 分歧类型（判定器按此升级/降级）----
@@ -56,6 +57,7 @@ _KIND_MAP = {
                   "口径不一致）→ 检查侧看到的无害形式与执行侧解出的危险形式不同，"
                   "关键字黑名单 / 路径前缀 / 扩展名白名单等过滤器被绕过（CWE-180）",
         "cwe": "CWE-180",
+        "severity": "medium",   # 类型上限（证据不足时按规则降档）
         "scenario": "filter",
         "fix": _FIX_COMMON,
     },
@@ -63,12 +65,14 @@ _KIND_MAP = {
         "effect": "一侧接受、一侧拒绝同一段字节 → 检查侧放行、执行侧拒绝（或反之），"
                   "可造成过滤器绕过或可用性差异",
         "cwe": "CWE-436",
+        "severity": "low",   # 类型上限（证据不足时按规则降档）
         "scenario": "bypass",
         "fix": "统一对非规范编码的接受策略，避免一侧宽容一侧严格",
     },
     KIND_SYNTAX_DETAIL: {
         "effect": "仅诊断信息不同，两侧读到的文本一致 → 无直接安全后果",
         "cwe": None,
+        "severity": "info",   # 类型上限（证据不足时按规则降档）
         "scenario": None,
         "fix": "无需修复；可作为兼容性记录",
     },
@@ -85,6 +89,9 @@ class EncNormAdapter:
 
     name = "enc-norm"
     compare_keys: tuple[str, ...] = COMPARE_KEYS
+    #: 承载"内容"的字段：只有它（而不是 ``codepoints`` 这种由它派生的诊断字段）
+    #: 参与"是不是只是写法差异"的判断 —— 否则 U+0053 与 U+0073 会被当成内容错位。
+    content_keys: tuple[str, ...] = ("norm_text",)
     boundary_kinds: tuple[str, ...] = BOUNDARY_KINDS
     kind_acceptance: str = KIND_ENC_ACCEPT
 
@@ -136,17 +143,7 @@ class EncNormAdapter:
         而这些字节是攻击者直接发送的 → 可控。
         与分帧领域"逐条移除请求头"完全同一条原理，只是承载者的形态不同。
         """
-        carriers: list[str] = []
-        for label, transform in enc_axes.ABLATIONS:
-            try:
-                candidate = transform(div.payload)
-            except Exception:      # noqa: BLE001 —— 变换对畸形输入无效即跳过
-                continue
-            if candidate == div.payload:
-                continue           # 这条变换对当前输入没动作，不构成证据
-            if not still_diverges(candidate, div, evaluate, self.compare_keys):
-                carriers.append(label)
-        return carriers
+        return ablate_via(enc_axes.ABLATIONS, div, evaluate, self.compare_keys)
 
     # ---------------------------------------------------------------- 最小化
 
@@ -191,6 +188,7 @@ class EncNormAdapter:
                     "norm_back": back_res.norm_text},
             numbers=(front_res.norm_text, back_res.norm_text),
             verified=True,
+            mismatch=not same,
         )
 
     # ---------------------------------------------------------------- PoC 脚本片段
@@ -224,6 +222,42 @@ class EncNormAdapter:
                 "              f\"（期望错位={expect_mismatch}）\")"),
         }
 
+    # ---------------------------------------------------------------- 修复形态
+
+    #: 基准实现 —— 修复形态 = 按它的口径解释之后的文本
+    baseline_id = "enc-strict"
+
+    def harden(self, payload: bytes):
+        """把 target 重写成**基准口径解释后**的无歧义写法。
+
+        编码歧义的来源是"同一段字节被读成不同的文本"：``%uXXXX`` 认不认、过长 UTF-8
+        接不接受、Unicode 做不做 NFC/NFD、全角折不折叠、大小写折到哪一步、NUL 截不截断。
+        把基准口径读出的文本按规范百分号编码写回去，检查侧与执行侧看到的就一模一样了。
+        """
+        target = self.extract(payload)
+        if not target:
+            return None
+        try:
+            policy = enc_reference.policy_of(self.baseline_id)
+        except KeyError:
+            return None
+        result = interpret(target, policy)
+        # 只重写**字符编码**：`?` `&` `=` `/` 这些在原文里本来就是字面量的结构字符
+        # 保持原样，否则会把一条 URL 编成一段谁也认不出的字节。
+        canonical = httpmsg.percent_encode_like(
+            result.norm_text, target.decode("latin-1")).encode("ascii")
+        if canonical == target:
+            return HardenedRequest(domain=self.name, fixed=payload,
+                                   note=HARDEN_NOOP_NOTE)
+
+        changes = [f"按基准口径重写：`{httpmsg.brief(target)}` → "
+                   f"`{httpmsg.brief(canonical)}`"]
+        if result.decoded_layers:
+            changes.append(f"解掉 {result.decoded_layers} 层转义，"
+                           f"重写为规范 UTF-8 百分号编码")
+        return HardenedRequest(domain=self.name,
+                               fixed=httpmsg.with_target(payload, canonical),
+                               changes=changes, note=HARDEN_NOTE)
 
 __all__ = ["EncNormAdapter", "KIND_ENC_INTERP", "KIND_ENC_ACCEPT",
            "KIND_SYNTAX_DETAIL", "BOUNDARY_KINDS", "COMPARE_KEYS", "meta_of"]

@@ -9,9 +9,10 @@ import itertools
 import random
 from dataclasses import dataclass, field
 
-from .classify.upgradability import judge
-from .contracts import Divergence, Finding, ProbeRejected
+from .classify.upgradability import finalize, judge
+from .contracts import Divergence, Finding, ProbeRejected, impl_brief
 from .differ.comparator import compare, diff_keys
+from .probe.cache import CachedObservations
 
 
 def case_id_of(payload: bytes) -> str:
@@ -65,10 +66,15 @@ class ScanResult:
     compare_keys: tuple[str, ...] = ()
     #: 参与本次扫描的全部实现 id（热力图需要完整矩阵，而不只是出过分歧的对）
     impl_ids: list[str] = field(default_factory=list)
+    #: 每个实现的来路（runner / 地址 / 读法）—— 结果页据此写明"A 侧是谁、在哪"
+    impls: list[dict] = field(default_factory=list)
     #: 本次扫描的领域适配器名 —— 决定 PoC 量化口径与报告口径
     domain: str = ""
     #: 前置按自身策略拒绝、因而**不可观测**的用例数（跳过，不合成观测）
     rejected_cases: int = 0
+    #: 观测缓存的本轮账：真实动作跑了几次、省了几次
+    cache_hits: int = 0
+    cache_trips: int = 0
 
     @property
     def security(self) -> list[Finding]:
@@ -87,6 +93,10 @@ def scan(adapter, evaluator, *, mode: str = "axis", limit: int | None = None,
     """
     rng = random.Random(seed)
     impl_ids = list(evaluator.specs)
+    # 一次运行一份观测缓存，跑完随结果一起丢弃（理由见 probe/cache.py）。
+    # 包在这里而不是包在长驻的 Evaluator 上：扫描是"一次性"的，
+    # 而流量接入那个 Evaluator 被 lru_cache 复用、跨请求活着。
+    evaluate = CachedObservations(evaluator)
     handwritten = adapter.expand(adapter.corpus(), rng)
     if limit is not None:
         handwritten = handwritten[:limit]
@@ -96,12 +106,13 @@ def scan(adapter, evaluator, *, mode: str = "axis", limit: int | None = None,
                         jobs=len(jobs),
                         compare_keys=tuple(adapter.compare_keys),
                         impl_ids=list(impl_ids),
+                        impls=[impl_brief(s) for s in evaluator.specs.values()],
                         domain=adapter.name)
 
     def run_case(left_id: str, right_id: str, axis: str, payload: bytes) -> None:
         try:
-            left = evaluator(left_id, payload)
-            right = evaluator(right_id, payload)
+            left = evaluate(left_id, payload)
+            right = evaluate(right_id, payload)
         except ProbeRejected:
             # 前置按自身策略拒绝了这条请求 → 后端视角不存在。
             # 跳过并计数：既不中止整轮扫描，也绝不合成一个"看起来像观测"的结果。
@@ -114,15 +125,15 @@ def scan(adapter, evaluator, *, mode: str = "axis", limit: int | None = None,
         result.divergences.append(div)
 
         kind = adapter.classify([d.key for d in div.diffs])
-        verdict = judge(div, kind, adapter, evaluator)
+        verdict = judge(div, kind, adapter, evaluate)
         finding = Finding(divergence=div, verdict=verdict,
                           original_len=len(payload))
 
         if do_minimize and verdict.is_security:
             def keeps_divergence(candidate: bytes) -> bool:      # 最小化用的谓词
                 try:
-                    lv = evaluator(left_id, candidate)
-                    rv = evaluator(right_id, candidate)
+                    lv = evaluate(left_id, candidate)
+                    rv = evaluate(right_id, candidate)
                 except ProbeRejected:
                     # 前置拒了这条更小的候选 → 观测不到，别拿它替换原样本
                     # （最小化只是让样本更好读，不值得为它冒任何风险）
@@ -133,6 +144,7 @@ def scan(adapter, evaluator, *, mode: str = "axis", limit: int | None = None,
             finding.minimized = minimized
             finding.minimized_len = len(minimized)
 
+        quantified = None
         if verdict.is_security:
             # 链路量化必须针对**这条发现自己的那一对**，而不是拓扑里固定的链路，
             # 否则会出现"安全级发现"配着"两侧理解一致"的自相矛盾。
@@ -143,6 +155,11 @@ def scan(adapter, evaluator, *, mode: str = "axis", limit: int | None = None,
             if quantified is not None:
                 finding.chain_evidence = quantified.describe
 
+        # 量化结果参与**定级**：有实测、或确实错位，才撑得起该类型的等级上限
+        # （见 ``classify.upgradability.grade``）。这一步必须在这里做 ——
+        # 量化要等最小化跑完才知道。
+        finalize(verdict, adapter, quantified)
+
         result.findings.append(finding)
 
     for done, (left_id, right_id, axis) in enumerate(jobs, start=1):
@@ -151,4 +168,6 @@ def scan(adapter, evaluator, *, mode: str = "axis", limit: int | None = None,
         if on_progress is not None:
             on_progress(done, len(jobs), result)
 
+    stats = evaluate.stats()
+    result.cache_hits, result.cache_trips = stats["hits"], stats["trips"]
     return result

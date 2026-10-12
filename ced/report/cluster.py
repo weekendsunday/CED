@@ -17,6 +17,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from ..contracts import SEVERITY_RANK
+
 #: 组内最多保留多少个 case_id（报告里只列前几个，完整清单在 JSON 里）
 MAX_IDS = 10
 
@@ -30,10 +32,12 @@ class Cluster:
     left: str
     right: str
     kind: str
-    level: str                       # 组内最严重的级别
+    level: str                       # 组内最严重的**类别**
     count: int                       # 组内发现条数
     representative: object           # 保留的那条 Finding
     case_ids: list[str] = field(default_factory=list)
+    #: 组内最严重的**危险等级**（五档之一）—— 报告表格按它分档，而不是按类别
+    severity: str = ""
 
     @property
     def case_id(self) -> str:
@@ -51,9 +55,10 @@ def _representative_key(finding) -> tuple:
     就该让代表是它 —— 否则最强的证据会被同类里更短的那条顶掉。
     """
     level = _LEVEL_ORDER.get(finding.verdict.level, 9)
+    severity = SEVERITY_RANK.get(getattr(finding.verdict, "severity", ""), 9)
     no_chain = 0 if getattr(finding, "chain_evidence", None) else 1
     length = finding.minimized_len or finding.original_len or 1 << 30
-    return (level, no_chain, length, finding.case_id)
+    return (level, severity, no_chain, length, finding.case_id)
 
 
 def cluster(findings) -> list[Cluster]:
@@ -79,6 +84,8 @@ def cluster(findings) -> list[Cluster]:
             count=len(group),
             representative=best,
             case_ids=[f.case_id for f in group[:MAX_IDS]],
+            severity=min((getattr(f.verdict, "severity", "") for f in group),
+                         key=lambda sv: SEVERITY_RANK.get(sv, 9), default=""),
         ))
     out.sort(key=lambda c: (_LEVEL_ORDER.get(c.level, 9), -c.count,
                             c.left, c.right, c.kind))
@@ -89,6 +96,7 @@ def cluster_payload(findings) -> list[dict]:
     """给报告 / 网页 / SSE 用的可序列化形式（不含细节，细节在 findings 里）。"""
     return [{
         "left": c.left, "right": c.right, "kind": c.kind, "level": c.level,
+        "severity": c.severity,
         "count": c.count, "case_id": c.case_id, "axis": c.axis,
         "case_ids": c.case_ids,
     } for c in cluster(findings)]

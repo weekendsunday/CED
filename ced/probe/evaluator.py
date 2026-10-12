@@ -11,18 +11,12 @@ import json
 import socket
 
 from ..adapters import ADAPTERS
-from ..contracts import ImplSpec, Observation, ProbeUnreachable
+from ..contracts import ImplSpec, Observation, ProbeUnreachable, parse_addr
 from ..impls import local_parser
 from .chain import ChainEvaluator
 
 SOCKET_TIMEOUT = 10.0
-DEFAULT_PROBE_PORT = 8800
 DEFAULT_API_PORT = 8801
-
-
-def parse_addr(addr: str) -> tuple[str, int]:
-    host, _, port = addr.rpartition(":")
-    return host or "127.0.0.1", int(port)
 
 
 def http_body(raw: bytes) -> bytes:
@@ -70,7 +64,7 @@ class SocketEvaluator:
         try:
             with socket.create_connection(self.addr, timeout=SOCKET_TIMEOUT) as sock:
                 sock.sendall(payload)
-                sock.shutdown(socket.SHUT_WR)       # 发完即半关闭 —— 探针据此立刻回复
+                sock.shutdown(socket.SHUT_WR)       # 发完即半关闭 —— 探针读到 EOF 立刻处理
                 raw = b""
                 while True:
                     chunk = sock.recv(65536)

@@ -19,13 +19,14 @@ from __future__ import annotations
 
 import random
 
-from ..contracts import ImplSpec, Quantified
-from ..classify.upgradability import still_diverges
+from .. import httpmsg
+from ..contracts import HardenedRequest, ImplSpec, Quantified
+from ..classify.upgradability import ablate_via
 from ..impls import query_reference
 from ..impls.query_norm import parse_query
 from ..minimize.ddmin import ddmin
 from ..mutate import query_axes
-from .base import http_request_fields
+from .base import HARDEN_NOTE, HARDEN_NOOP_NOTE, http_request_fields
 from .registry import register
 
 # ---- 分歧类型（判定器按此升级/降级）----
@@ -61,6 +62,7 @@ _KIND_MAP = {
                   "用同一份输入就能让『被校验的值』与『被使用的值』分叉 "
                   "（HTTP 参数污染 HPP / 越权 / 金额篡改 / 校验绕过）",
         "cwe": "CWE-235",
+        "severity": "medium",   # 类型上限（证据不足时按规则降档）
         "scenario": "param",
         "fix": _FIX_COMMON,
     },
@@ -70,6 +72,7 @@ _KIND_MAP = {
                   "参数是否排序不一致）→ 前置与业务看到的参数集不同，"
                   "可造成参数污染、规则绕过、缓存键错位（HPP / 校验绕过 / 缓存投毒）",
         "cwe": "CWE-235",
+        "severity": "low",   # 类型上限（证据不足时按规则降档）
         "scenario": "param",
         "fix": _FIX_COMMON,
     },
@@ -77,12 +80,14 @@ _KIND_MAP = {
         "effect": "一侧接受、一侧拒绝同一段查询串 → 前置放行下游拒绝（或反之），"
                   "可造成防护绕过或可用性差异",
         "cwe": "CWE-436",
+        "severity": "low",   # 类型上限（证据不足时按规则降档）
         "scenario": "bypass",
         "fix": "统一对非规范查询串的接受策略，避免一侧宽容一侧严格",
     },
     KIND_SYNTAX_DETAIL: {
         "effect": "仅诊断信息不同，两侧认定的参数集一致 → 无直接安全后果",
         "cwe": None,
+        "severity": "info",   # 类型上限（证据不足时按规则降档）
         "scenario": None,
         "fix": "无需修复；可作为兼容性记录",
     },
@@ -109,6 +114,7 @@ class QueryNormAdapter:
     """查询串解析领域。"""
 
     name = "query-norm"
+    content_keys: tuple[str, ...] = ("norm_query", "keys")
     compare_keys: tuple[str, ...] = COMPARE_KEYS
     boundary_kinds: tuple[str, ...] = BOUNDARY_KINDS
     kind_acceptance: str = KIND_ACCEPTANCE
@@ -193,17 +199,7 @@ class QueryNormAdapter:
         逐条"抹掉一类承载者 / 统一一种解释"重放两侧：分歧消失了，
         说明它由那一类字节（或那一处解释差异）承载。查询串是攻击者直接发送的 → 可控。
         """
-        carriers: list[str] = []
-        for label, transform in query_axes.ABLATIONS:
-            try:
-                candidate = transform(div.payload)
-            except Exception:      # noqa: BLE001 —— 变换对畸形输入无效即跳过
-                continue
-            if candidate == div.payload:
-                continue           # 这条变换对当前输入没动作，不构成证据
-            if not still_diverges(candidate, div, evaluate, self.compare_keys):
-                carriers.append(label)
-        return carriers
+        return ablate_via(query_axes.ABLATIONS, div, evaluate, self.compare_keys)
 
     # ---------------------------------------------------------------- 最小化
 
@@ -247,7 +243,8 @@ class QueryNormAdapter:
         values = {"front": left_id, "back": right_id,
                   "norm_front": rear, "norm_back": back_q}
 
-        if rear == back_q:
+        same = rear == back_q
+        if same:
             describe = (f"若 {pair} 串联：两侧把同一段查询串都解析成 "
                         f"`{rear}` → 无取值错位")
         else:
@@ -271,8 +268,45 @@ class QueryNormAdapter:
             values=values,
             numbers=(rear, back_q),
             verified=True,
+            mismatch=not same,
         )
 
+    # ---------------------------------------------------------------- 修复形态
+
+    #: 基准实现 —— 修复形态 = 按它的口径解析之后的写法
+    baseline_id = "query-gateway"
+
+    def harden(self, payload: bytes):
+        """把查询串重写成**基准口径解析后**的无歧义写法。
+
+        查询串的歧义来自"同一串 ``k=v`` 被解析成不同的参数集"：重复参数取首还是取尾、
+        ``+`` 算不算空格、``%`` 解几层、``;`` 算不算分隔符、大小写与括号怎么处理。
+        把基准口径解析出来的参数集**按规范百分号编码**重新拼一遍，歧义就没了。
+        """
+        query = self.extract(payload)
+        if not query:
+            return None
+        try:
+            policy = query_reference.policy_of(self.baseline_id)
+        except KeyError:
+            return None
+        result = parse_query(query, policy)
+        canonical = "&".join(
+            f"{httpmsg.percent_encode(name)}={httpmsg.percent_encode(value)}"
+            for name, value in result.pairs).encode("ascii")
+        if canonical == query:
+            return HardenedRequest(domain=self.name, fixed=payload,
+                                   note=HARDEN_NOOP_NOTE)
+
+        changes = [f"查询串重写：`{httpmsg.brief(query)}` → "
+                   f"`{httpmsg.brief(canonical)}`"]
+        raw_count = len([t for t in query.split(b"&") if t])
+        if raw_count != len(result.pairs):
+            changes.append(f"参数条数 {raw_count} → {len(result.pairs)}"
+                           f"（重复项 / 空项按基准口径定下来）")
+        return HardenedRequest(domain=self.name,
+                               fixed=httpmsg.with_query(payload, canonical),
+                               changes=changes, note=HARDEN_NOTE)
 
 __all__ = ["QueryNormAdapter", "KIND_HPP", "KIND_PARAM_SET", "KIND_ACCEPTANCE",
            "KIND_SYNTAX_DETAIL", "BOUNDARY_KINDS", "COMPARE_KEYS", "meta_of"]

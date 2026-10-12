@@ -17,13 +17,14 @@ from __future__ import annotations
 
 import random
 
-from ..contracts import ImplSpec, Quantified
-from ..classify.upgradability import still_diverges
+from .. import httpmsg
+from ..contracts import HardenedRequest, ImplSpec, Quantified
+from ..classify.upgradability import ablate_via
 from ..impls import host_reference
 from ..impls.host_norm import normalize_host
 from ..minimize.ddmin import ddmin
 from ..mutate import host_axes
-from .base import http_request_fields
+from .base import HARDEN_NOTE, HARDEN_NOOP_NOTE, http_request_fields
 from .registry import register
 
 # ---- 分歧类型（判定器按此升级/降级）----
@@ -59,6 +60,7 @@ _KIND_MAP = {
                   "若落在不同站点或不同缓存键上，就是虚拟主机绕过或缓存投毒"
                   "（一条响应被缓存到另一个键下喂给别人）",
         "cwe": "CWE-436",
+        "severity": "medium",   # 类型上限（证据不足时按规则降档）
         "scenario": "poison",
         "fix": _FIX_COMMON,
     },
@@ -66,12 +68,14 @@ _KIND_MAP = {
         "effect": "一侧接受、一侧拒绝同一个 Host 值 → 前置放行下游拒绝（或反之），"
                   "可造成防护绕过或可用性差异",
         "cwe": "CWE-436",
+        "severity": "low",   # 类型上限（证据不足时按规则降档）
         "scenario": "bypass",
         "fix": "统一对非规范 Host 的接受策略，避免一侧宽容一侧严格",
     },
     KIND_SYNTAX_DETAIL: {
         "effect": "仅诊断信息不同，两侧认定的虚拟主机一致 → 无直接安全后果",
         "cwe": None,
+        "severity": "info",   # 类型上限（证据不足时按规则降档）
         "scenario": None,
         "fix": "无需修复；可作为兼容性记录",
     },
@@ -87,6 +91,7 @@ class HostNormAdapter:
     """Host / 路由归一化领域。"""
 
     name = "host-norm"
+    content_keys: tuple[str, ...] = ("norm_host",)
     compare_keys: tuple[str, ...] = COMPARE_KEYS
     boundary_kinds: tuple[str, ...] = BOUNDARY_KINDS
     kind_acceptance: str = KIND_ACCEPTANCE
@@ -139,17 +144,7 @@ class HostNormAdapter:
         而 Host 是攻击者直接发送的 → 可控。
         与分帧领域"逐条移除请求头"同一条原理，只是承载者的形态不同。
         """
-        carriers: list[str] = []
-        for label, transform in host_axes.ABLATIONS:
-            try:
-                candidate = transform(div.payload)
-            except Exception:      # noqa: BLE001 —— 变换对畸形输入无效即跳过
-                continue
-            if candidate == div.payload:
-                continue           # 这条变换对当前输入没动作，不构成证据
-            if not still_diverges(candidate, div, evaluate, self.compare_keys):
-                carriers.append(label)
-        return carriers
+        return ablate_via(host_axes.ABLATIONS, div, evaluate, self.compare_keys)
 
     # ---------------------------------------------------------------- 最小化
 
@@ -211,6 +206,7 @@ class HostNormAdapter:
                     "norm_back": back_res.norm_host},
             numbers=(front_res.norm_host, back_res.norm_host),
             verified=True,
+            mismatch=not same,
         )
 
     # ---------------------------------------------------------------- PoC 片段
@@ -243,6 +239,40 @@ class HostNormAdapter:
                 "              f\"（期望错位={expect_mismatch}）\")"),
         }
 
+    # ---------------------------------------------------------------- 修复形态
+
+    #: 基准实现 —— 修复形态 = 按它的口径归一化之后的写法
+    baseline_id = "host-literal"
+
+    def harden(self, payload: bytes):
+        """把 Host 重写成**基准口径归一化后**的无歧义写法。
+
+        Host 歧义来自"同一个主机名被认成不同的站"：大小写、尾随点、默认端口、
+        userinfo、连续点、IDN 编码、IPv6 的规范形式、百分号转义。全部归一化后写回去，
+        两侧认的就是同一个虚拟主机（同一个缓存键）。
+        """
+        host = self.extract(payload)
+        if not host:
+            return None
+        try:
+            policy = host_reference.policy_of(self.baseline_id)
+        except KeyError:
+            return None
+        result = normalize_host(host, policy)
+        canonical = result.norm_host.encode("utf-8", "surrogateescape")
+        if result.port is not None:
+            canonical += f":{result.port}".encode()
+        if canonical == host:
+            return HardenedRequest(domain=self.name, fixed=payload,
+                                   note=HARDEN_NOOP_NOTE)
+
+        changes = [f"Host 归一化：`{httpmsg.brief(host)}` → "
+                   f"`{httpmsg.brief(canonical)}`"]
+        if result.has_userinfo:
+            changes.append("基准口径仍保留 userinfo；带 userinfo 的 Host 建议直接拒绝")
+        return HardenedRequest(domain=self.name,
+                               fixed=httpmsg.with_header(payload, b"Host", canonical),
+                               changes=changes, note=HARDEN_NOTE)
 
 __all__ = ["HostNormAdapter", "KIND_HOST_NORM", "KIND_ACCEPTANCE",
            "KIND_SYNTAX_DETAIL", "BOUNDARY_KINDS", "COMPARE_KEYS", "meta_of"]

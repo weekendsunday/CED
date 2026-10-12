@@ -16,22 +16,30 @@ from pathlib import Path
 
 from .adapters import ADAPTERS, get as get_adapter
 from .impls import reference
-from .orchestrate.topology import demo, load
+from .orchestrate.topology import SettingsError, check_probes, demo, load
 from .pipeline import scan
-from .contracts import ProbeUnreachable
+from .contracts import SEVERITY_LABEL, ProbeUnreachable
 from .probe import Evaluator
 from .report.renderer import render_json, render_markdown
 from . import artifacts, store
 
 
-def _print_event(event: dict) -> None:
-    """把任务事件流打到终端 —— CLI 与网页控制台消费的是同一套事件。"""
-    kind = event.get("type")
-    if kind == "stage":
-        print(f"[{event.get('stage', '')}] {event.get('detail', '')}")
-    elif kind == "progress":
-        print(f"[进度] {event.get('done')}/{event.get('total')}　"
-              f"分歧 {event.get('divergences')}　安全级 {event.get('security')}")
+
+def _topology_of(args):
+    """读拓扑：读不了就说人话退出，不把异常堆栈甩给用户。"""
+    try:
+        return load(args.topology) if args.topology else demo(args.domain)
+    except SettingsError as exc:
+        raise SystemExit(f"[!] {exc}") from exc
+
+
+def _check_link(topo) -> None:
+    """起跑前核对记录员身份。领域对不上 → 当场退出（这是"跑完也没意义"的前置条件）。"""
+    try:
+        for note in check_probes(topo):
+            print(f"[核对] {note}")
+    except SettingsError as exc:
+        raise SystemExit(f"[!] {exc}") from exc
 
 
 def _cmd_scan(args: argparse.Namespace) -> int:
@@ -39,7 +47,8 @@ def _cmd_scan(args: argparse.Namespace) -> int:
         adapter = get_adapter(args.domain)
     except KeyError as exc:
         raise SystemExit(f"[!] {exc}") from exc
-    topo = load(args.topology) if args.topology else demo(args.domain)
+    topo = _topology_of(args)
+    _check_link(topo)
     if args.mode:
         topo_mode = args.mode
     else:
@@ -224,7 +233,8 @@ def _cmd_probe(args: argparse.Namespace) -> int:
     if not payload:
         raise SystemExit("[!] 输入为空")
 
-    topo = load(args.topology) if args.topology else demo(args.domain)
+    topo = _topology_of(args)
+    _check_link(topo)
     adapter = get_adapter(args.domain)
     evaluator = Evaluator(topo.impls)
 
@@ -297,7 +307,8 @@ def _cmd_poc(args: argparse.Namespace) -> int:
     except KeyError as exc:
         raise SystemExit(f"[!] {exc}") from exc
 
-    topo = load(args.topology) if args.topology else demo(args.domain)
+    topo = _topology_of(args)
+    _check_link(topo)
     evaluator = Evaluator(topo.impls)
     try:
         result = scan(adapter, evaluator, mode=args.mode, limit=args.limit,
@@ -407,12 +418,15 @@ def _cmd_capture(args: argparse.Namespace) -> int:
         if not analysis:
             print(f"{head:<72} {record.get('skip') or '（未分析）'}", flush=True)
             return
-        tag = {"security": "!! 安全级", "unknown": "疑点"}.get(analysis["level"], "已检·一致")
+        tag = {"security": "!! 安全级", "unknown": "疑点"}.get(
+            analysis["level"], "已检·一致")
+        worst = analysis.get("severity") or ""
+        grade = f"[{SEVERITY_LABEL.get(worst, worst)}]" if worst else ""
         per = "  ".join(f"{name}:{row['divergences']}"
                         for name, row in analysis["domains"].items()
                         if row["divergences"])
         print(f"{head:<72}{times} 分歧 {analysis['divergences']:<3} {tag:<7} "
-              f"{record.get('elapsed_ms')}ms  {per}", flush=True)
+              f"{grade:<4} {record.get('elapsed_ms')}ms  {per}", flush=True)
         top = analysis.get("top")
         if top and analysis["level"] == "security":
             print(f"{'':<72} └ {top['domain']}｜{top['left']} ↔ {top['right']}｜"

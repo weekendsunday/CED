@@ -6,6 +6,8 @@
   * 热力图对称、对角线为空、同格多条发现取最严重级别
   * 真跑一次扫描后矩阵覆盖全部 9 个实现（9×9）
   * 两个新端点在真 HTTP 上返回 200，未知任务号 404
+  * 结果自证：``result_payload`` 带上 impls / 实测标记 / 缓存账，
+    顶部三行要用的"最严重档位"与指标口径一致
 """
 from __future__ import annotations
 
@@ -90,9 +92,9 @@ class TestScanMetrics(unittest.TestCase):
         m = scan_metrics(_result(findings, total_cases=12, jobs=4), elapsed=6.0)
 
         self.assertEqual(set(m), {
-            "total_cases", "jobs", "divergences", "by_level", "security",
-            "security_share", "controllable_rate", "unique_case_ratio",
-            "minimize_ratio", "minimized_count", "elapsed",
+            "total_cases", "jobs", "divergences", "by_level", "by_severity",
+            "security", "severity", "security_share", "controllable_rate",
+            "unique_case_ratio", "minimize_ratio", "minimized_count", "elapsed",
             "avg_seconds_per_case"})
         self.assertEqual(m["total_cases"], 12)
         self.assertEqual(m["jobs"], 4)
@@ -212,6 +214,41 @@ class TestRealScanMatrix(unittest.TestCase):
         self.assertGreaterEqual(d["max"], 1)
         metrics = scan_metrics(result, elapsed=1.0)
         self.assertEqual(metrics["divergences"], len(result.divergences))
+
+
+class TestResultSelfEvidence(unittest.TestCase):
+    """「产品实测」结果页顶部三行与每条发现的实测 / 推演标记，字段得齐。"""
+
+    def _scan(self, limit: int = 20):
+        adapter = get_adapter("http1-framing")
+        evaluator = Evaluator(demo().impls)
+        return scan(adapter, evaluator, mode="axis", limit=limit,
+                    do_minimize=False)
+
+    def test_payload_has_self_evidence_fields(self):
+        from ced.report.renderer import result_payload
+
+        result = self._scan()
+        payload = result_payload(result)
+        self.assertIn("impls", payload)
+        self.assertIn("measured_impls", payload)
+        self.assertIn("has_product", payload)
+        self.assertIn("cache", payload)
+        self.assertEqual(sorted(payload["cache"]), ["hits", "trips"])
+        # 只有内置参照实现：没有实测、没有真实产品参与
+        self.assertTrue(payload["impls"])
+        self.assertFalse(payload["has_product"])
+        self.assertEqual(payload["measured_impls"], [])
+        for item in payload["findings"]:
+            self.assertFalse(item["measured"])
+        # 缓存确实被用上了（同一对「实现 + 字节」在一次运行里会重复求值）
+        self.assertGreater(payload["cache"]["hits"], 0)
+
+    def test_worst_severity_matches_the_metrics_caliber(self):
+        """结果页第三行报的"最严重档位"与指标口径同源。"""
+        metrics = scan_metrics(self._scan(), elapsed=1.0)
+        self.assertIn(metrics["severity"],
+                      ("critical", "high", "medium", "low", "info", ""))
 
 
 class TestMetricsApi(unittest.TestCase):

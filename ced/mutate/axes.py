@@ -5,6 +5,8 @@
 """
 from __future__ import annotations
 
+from .engine import build_corpus
+
 CRLF = b"\r\n"
 LF = b"\n"
 HOST = (b"Host", b"localhost")
@@ -138,8 +140,4 @@ _BUILDERS = {
 
 def corpus() -> list[tuple[str, bytes]]:
     """全部种子：(轴名, 原始字节)。"""
-    out: list[tuple[str, bytes]] = []
-    for axis in AXES:
-        for payload in _BUILDERS[axis]():
-            out.append((axis, payload))
-    return out
+    return build_corpus(AXES, _BUILDERS)

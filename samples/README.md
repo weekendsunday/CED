@@ -23,20 +23,30 @@ python -c "from ced.detect import run; import pathlib; r=run(pathlib.Path('sampl
 
 ## 原始请求（10 个）
 
-| 文件 | 是什么 | 实测结论 |
+| 文件 | 是什么 | 实测结论（分歧 / 安全级 / 最高危险等级） |
 |---|---|---|
 | `01-benign-request.bin` | 一条完全正常的 POST | **0 分歧**（对照组：所有实现读法一致，防假阳性） |
-| `02-cl-te-smuggling.bin` | `Content-Length` 与 `Transfer-Encoding` 并存 + 夹带第二条请求 | 分歧 15 / **安全级 15**｜`http1-framing` `framing_boundary` **CWE-444** |
-| `03-cl-leading-zero.bin` | `Content-Length: 03` 前导零 | 分歧 8 / 安全级 8｜`http1-framing` CWE-444 |
-| `04-conflicting-cl.bin` | 两个冲突的 `Content-Length`（3 与 4） | 分歧 8 / 安全级 8｜`http1-framing` CWE-444 |
-| `05-chunked-bare-lf.bin` | 分块体用裸 LF 作行尾 | 分歧 8 / 安全级 8｜`http1-framing` CWE-444 |
-| `06-host-trailing-dot.bin` | `Host: example.com.` 尾随点 | 分歧 8 / 安全级 8｜`host-norm` `host_interpretation` **CWE-436**（虚拟主机绕过 / 缓存投毒） |
-| `07-path-traversal.bin` | `/static/../admin` 路径穿越 | 分歧 11 / 安全级 11｜`url-norm` `path_traversal` **CWE-22** |
-| `08-query-pollution.bin` | `a=1&a=2` + 二次编码 | 分歧 43 / 安全级 31｜最强 `enc-norm` `enc_interpretation` **CWE-180** |
-| `09-enc-uXXXX.bin` | `%u002e%u002e`（IIS 遗留转义） | 分歧 9 / 安全级 9｜`enc-norm` `enc_interpretation` CWE-180 |
-| `10-absolute-form.bin` | 代理形式的绝对 URI 请求行 | 分歧 29 / 安全级 28｜`http1-framing` CWE-444 |
+| `02-cl-te-smuggling.bin` | `Content-Length` 与 `Transfer-Encoding` 并存 + 夹带第二条请求 | 15 / **15** / **高**｜`http1-framing` `framing_boundary` **CWE-444** |
+| `03-cl-leading-zero.bin` | `Content-Length: 03` 前导零 | 8 / 8 / **高**｜`http1-framing` CWE-444 |
+| `04-conflicting-cl.bin` | 两个冲突的 `Content-Length`（3 与 4） | 8 / 8 / **高**｜`http1-framing` CWE-444 |
+| `05-chunked-bare-lf.bin` | 分块体用裸 LF 作行尾 | 8 / 8 / **高**｜`http1-framing` CWE-444 |
+| `06-host-trailing-dot.bin` | `Host: example.com.` 尾随点 | 8 / 8 / 中｜`host-norm` `host_interpretation` **CWE-436**（虚拟主机绕过 / 缓存投毒） |
+| `07-path-traversal.bin` | `/static/../admin` 路径穿越 | 11 / 11 / **高**｜`url-norm` `path_traversal` **CWE-22** |
+| `08-query-pollution.bin` | `a=1&a=2` + 二次编码 | 43 / 22 / 中｜最强 `query-norm` `param_pollution` **CWE-235** |
+| `09-enc-uXXXX.bin` | `%u002e%u002e`（IIS 遗留转义） | 9 / 9 / 中｜`enc-norm` `enc_interpretation` CWE-180 |
+| `10-absolute-form.bin` | 代理形式的绝对 URI 请求行 | 29 / 28 / **高**｜`http1-framing` CWE-444 |
 
 这 10 个覆盖了 **5 个领域**（分帧 / 路径 / Host / 查询串 / 编码），每个都带 1 个**对照组**在上面。
+
+**两列数字别混着读**：「安全级」是**类别**（结构性前提成立，不等于漏洞），
+「最高危险等级」才是程度（严重 / 高 / 中 / 低 / 信息）。
+
+> 等级怎么来的：先由领域给出**类型上限**（分帧边界错位能直接夹带请求 → 上限"高"；
+> 编码口径差异最多是过滤器绕过 → 上限"中"），再用证据收紧 —— 实机测量到错位才是
+> "严重"，量化不出来降一档，"量化出来两侧其实一致"降两档，只有疑点就是"低"。
+> 所以 `06` / `09` 这种"策略差异"落在"中"，而 `02` / `07` 这种"边界 / 资源真的错位"
+> 落在"高"。每份样本还会附一份**修复形态**（同一条请求规范化之后长什么样），
+> 页面上是左右两栏逐行对照，报告里是一段 ```diff。
 
 ## 外部工具的发现（5 种格式，`external/`）
 

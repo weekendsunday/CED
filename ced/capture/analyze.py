@@ -24,15 +24,11 @@ from functools import lru_cache
 
 from ..adapters import get as get_adapter
 from ..adapters import names as domain_names
-from ..classify.upgradability import judge
-from ..contracts import Finding
+from ..classify.upgradability import finalize, judge
+from ..contracts import SEVERITY_RANK, Finding, worst_severity
 from ..differ.comparator import compare
 from ..pipeline import case_id_of, plan_jobs
 from ..probe import Evaluator
-
-#: 级别排序：数字越小越严重（用来挑「最强的一条」）
-_LEVEL_RANK = {"security": 0, "unknown": 1, "compatibility": 2}
-
 
 @lru_cache(maxsize=None)
 def _kit(domain: str) -> tuple:
@@ -62,12 +58,18 @@ class Hit:
     ablation: str = ""
     effect: str = ""
     fix: str = ""
+    #: 危险等级（五档）—— 前端徽章与分档统计都按它
+    severity: str = ""
+    #: 量化说明（"前置认的资源 vs 后端认的资源"这类），没有就是空串
+    quantified: str = ""
 
     def to_dict(self) -> dict:
         return {"domain": self.domain, "case_id": self.case_id, "level": self.level,
-                "kind": self.kind, "left": self.left, "right": self.right,
-                "reason": self.reason, "cwe": self.cwe, "scenario": self.scenario,
-                "ablation": self.ablation, "effect": self.effect, "fix": self.fix}
+                "severity": self.severity, "kind": self.kind, "left": self.left,
+                "right": self.right, "reason": self.reason, "cwe": self.cwe,
+                "scenario": self.scenario, "ablation": self.ablation,
+                "effect": self.effect, "fix": self.fix,
+                "quantified": self.quantified}
 
 
 @dataclass
@@ -90,6 +92,20 @@ class Analysis:
         return sum(int(d["security"]) for d in self.domains.values())
 
     @property
+    def severities(self) -> dict:
+        """按危险等级汇总（五档）—— 前端汇总卡用它，不再只报一个"安全级"数字。"""
+        out: dict[str, int] = {}
+        for item in self.domains.values():
+            for name, count in (item.get("severities") or {}).items():
+                out[name] = out.get(name, 0) + int(count)
+        return out
+
+    @property
+    def severity(self) -> str:
+        """这条请求里最严重的等级（没有分歧就是空串）。"""
+        return worst_severity(self.severities)
+
+    @property
     def level(self) -> str:
         if self.security:
             return "security"
@@ -100,6 +116,7 @@ class Analysis:
     def to_dict(self) -> dict:
         return {"case_id": self.case_id, "raw_len": self.raw_len,
                 "divergences": self.divergences, "security": self.security,
+                "severity": self.severity, "severities": self.severities,
                 "level": self.level, "domains": self.domains,
                 "top": self.top.to_dict() if self.top else None}
 
@@ -117,12 +134,14 @@ def analyze(raw: bytes, domains: list[str] | None = None) -> Analysis:
         payload = adapter.extract(raw)          # ← 同一条请求，各领域各取所需
         if not payload:
             out.domains[name] = {"pairs": 0, "divergences": 0, "security": 0,
-                                 "kinds": {}, "note": "该领域从这份字节里取不到观测对象"}
+                                 "kinds": {}, "severities": {},
+                                 "note": "该领域从这份字节里取不到观测对象"}
             continue
 
         jobs = plan_jobs(adapter, impl_ids, "cross")
         divergences = security = 0
         kinds: dict[str, int] = {}
+        severities: dict[str, int] = {}
         for left_id, right_id, axis in jobs:
             left = evaluator(left_id, payload)
             right = evaluator(right_id, payload)
@@ -133,22 +152,30 @@ def analyze(raw: bytes, domains: list[str] | None = None) -> Analysis:
             kind = adapter.classify([d.key for d in div.diffs])
             kinds[kind] = kinds.get(kind, 0) + 1
             verdict = judge(div, kind, adapter, evaluator)
+            quantified = None
             if verdict.is_security:
                 security += 1
-            rank = _LEVEL_RANK.get(verdict.level, 9)
+                quantified = adapter.quantify(payload, left_id, right_id, div=div)
+            # 量化决定等级档位（实测→严重；有错位→类型上限；量化不了→降档）
+            finalize(verdict, adapter, quantified)
+            severities[verdict.severity] = severities.get(verdict.severity, 0) + 1
+            rank = SEVERITY_RANK.get(verdict.severity, 9)
             if rank < best_rank:
                 best_rank = rank
                 best = Hit(domain=name, case_id=case_id, level=verdict.level,
-                           kind=kind, left=left_id, right=right_id,
+                           severity=verdict.severity, kind=kind,
+                           left=left_id, right=right_id,
                            reason=verdict.reason, cwe=verdict.cwe or "",
                            scenario=verdict.scenario or "",
                            ablation=verdict.ablation or "",
-                           effect=verdict.effect or "", fix=verdict.fix or "")
+                           effect=verdict.effect or "", fix=verdict.fix or "",
+                           quantified=(quantified.describe if quantified else ""))
                 best_finding = Finding(divergence=div, verdict=verdict,
                                        original_len=len(payload))
 
         out.domains[name] = {"pairs": len(jobs), "divergences": divergences,
-                             "security": security, "kinds": kinds}
+                             "security": security, "kinds": kinds,
+                             "severities": severities}
 
     out.top = best
     out.top_finding = best_finding

@@ -26,7 +26,7 @@ from ced import store
 from ced.report.renderer import result_payload
 from ced.scan import runner
 from ced.scan.job import ABORTED, DONE, JobRegistry
-from ced.web.server import REGISTRY, Handler, _bind
+from ced.web.server import REGISTRY, _bind
 
 
 def _post(base: str, path: str, payload: dict) -> tuple[int, dict]:
@@ -239,6 +239,105 @@ class TestConsoleApi(_TempDb):
         status, payload = _post(self.base, "/api/scan/abort", {"job_id": "nope"})
         self.assertEqual(status, 404)
         self.assertIn("error", payload)
+
+
+class TestScanLinkApi(unittest.TestCase):
+    """连线设置的 HTTP 面：校验、连通性自检、导入解析。
+
+    单独一个类（不继承 _TempDb）：这几条走不到数据库，
+    而临时目录那套在旧解释器上会先炸 —— 那会把"接口对不对"这件事一起淹掉。
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls._httpd = _bind("127.0.0.1", 0)
+        cls.base = f"http://127.0.0.1:{cls._httpd.server_address[1]}"
+        cls._thread = threading.Thread(target=cls._httpd.serve_forever, daemon=True)
+        cls._thread.start()
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls._httpd.shutdown()
+        cls._httpd.server_close()
+
+    def _events(self, job_id: str, limit: float = 60.0) -> list[dict]:
+        request = urllib.request.Request(
+            f"{self.base}/api/scan/events?job_id={job_id}")
+        events: list[dict] = []
+        deadline = time.time() + limit
+        with urllib.request.urlopen(request, timeout=limit) as stream:
+            while time.time() < deadline:
+                line = stream.readline()
+                if not line:
+                    break
+                if not line.startswith(b"data:"):
+                    continue
+                event = json.loads(line[5:].decode("utf-8"))
+                events.append(event)
+                if event.get("type") in ("done", "error"):
+                    break
+        return events
+
+    def test_result_payload_carries_self_evidence(self):
+        """结果页顶部那三行与每条发现的「实测 / 推演」都有据可查。"""
+        status, started = _post(self.base, "/api/scan/start",
+                                {"mode": "axis", "limit": 20, "seed": 42})
+        self.assertEqual(status, 200, started)
+        job_id = started["job_id"]
+        self._events(job_id)
+        status, payload = _get(self.base, f"/api/scan/result?job_id={job_id}")
+        self.assertEqual(status, 200, payload)
+        result = payload["result"]
+        # 只跑内置基准：有 impls 一览、但没有真实产品参与 —— 结果页据此明写"疑点"
+        self.assertTrue(result["impls"])
+        self.assertTrue(all(i["measured"] is False for i in result["impls"]))
+        self.assertFalse(result["has_product"])
+        self.assertIn("hits", result["cache"])
+        self.assertIn("trips", result["cache"])
+        self.assertIn("measured", result["summary"])
+        for f in result["findings"]:
+            self.assertFalse(f["measured"], "内置基准之间的对比只能标「推演」")
+
+    def test_link_check_refuses_to_pretend(self):
+        """只跑内置基准时没有链路可查 —— 要说清楚，而不是给一盏绿灯。"""
+        status, payload = _post(self.base, "/api/scan/link/check",
+                                {"domain": "http1-framing", "link": {}})
+        self.assertEqual(status, 400)
+        self.assertIn("内置基准", payload["error"])
+
+    def test_broken_link_is_refused_before_starting(self):
+        """连线设置字段写错：当场 400 人话，绝不跑完 0 条分歧还不吭声。"""
+        bad_links = [
+            {"format": 1, "domain": "http1-framing", "wat": 1},
+            {"format": 1, "domain": "http1-framing", "impls": []},
+            {"format": 1, "domain": "http1-framing",
+             "impls": [{"runner": "local", "policy": "ref-cl-first"}]},
+            {"format": 1, "domain": "http1-framing",
+             "impls": [{"runner": "local", "policy": "does-not-exist"}]},
+        ]
+        for link in bad_links:
+            status, payload = _post(self.base, "/api/scan/start",
+                                    {"domain": "http1-framing", "link": link})
+            self.assertEqual(status, 400, f"{link} 应被拒绝：{payload}")
+            self.assertIn("error", payload)
+
+    def test_link_parse_reads_a_file_into_settings(self):
+        text = ('{"format": 1, "domain": "http1-framing", "product": '
+                '{"id": "gw", "endpoint": "127.0.0.1:8080", '
+                '"probe_api": "127.0.0.1:8801"}}')
+        status, payload = _post(self.base, "/api/scan/link/parse",
+                                {"filename": "在用的连线设置.json", "text": text})
+        self.assertEqual(status, 200, payload)
+        self.assertEqual(payload["settings"]["product"]["endpoint"],
+                         "127.0.0.1:8080")
+        self.assertEqual(payload["domain"], "http1-framing")
+
+    def test_link_parse_reports_bad_files_in_plain_words(self):
+        status, payload = _post(self.base, "/api/scan/link/parse",
+                                {"filename": "x.yaml",
+                                 "text": "domain: http1-framing\n"})
+        self.assertEqual(status, 400)
+        self.assertIn("yaml", payload["error"].lower())
 
 
 if __name__ == "__main__":

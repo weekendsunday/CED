@@ -3,7 +3,7 @@
    --------------------------------------------------------------------------
    组织顺序：令牌 → 基底/排版 → 布局 → 页头 → 导航 → 卡片 → 按钮 → 表单
              → 文本块 → 徽章 → 发现卡 → 指标 → 表格 → 列表 → 代码 → 链路
-             → 侧栏/工作区 → 弹窗 → 响应式 → 动效偏好
+             → 侧栏/工作区 → 弹窗 → 产品实测引导 → 响应式 → 动效偏好
    约定：所有颜色 / 字号 / 间距 / 圆角 / 阴影都走令牌，组件里不写死十六进制，
         这样暗色模式只需要覆盖 :root 一层。
    ========================================================================== */
@@ -21,7 +21,6 @@
   --surface-3:#ebebf0;
   --line:#e8e8ed;                   /* 发丝边，靠 1px 而不是阴影分层 */
   --line-2:#d2d2d7;
-  --header-bg:rgba(255,255,255,.72);
 
   /* 文字：Apple 三级灰阶，最浅一级也保证 AA */
   --ink:#1d1d1f;
@@ -46,17 +45,15 @@
 
   /* 字号：1=标注 2=正文小 3=正文 4=小标题 5=数字 6=大标题 */
   --fs-1:12px; --fs-2:13px; --fs-3:15px; --fs-4:17px; --fs-5:22px; --fs-6:34px;
-  --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:24px; --s6:36px; --s7:52px;
+  --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:24px;
   --r1:10px; --r2:14px; --r3:18px; --r-pill:980px;
 
   /* 阴影只留给浮层；静态内容一律扁平（Apple 的克制） */
   --sh-1:0 1px 2px rgba(0,0,0,.05);
-  --sh-2:0 3px 10px rgba(0,0,0,.07);
   --sh-3:0 14px 36px rgba(0,0,0,.16);
 
   --sans:-apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Neue","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
   --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
-  --shell:1320px;
 
   /* 旧 JS 内联样式引用的变量别名，保留以免 var() 失效 */
   --dim:var(--ink-3);
@@ -103,7 +100,6 @@ li{margin:2px 0}
 /* ==========================================================================
    3. 布局骨架
    ========================================================================== */
-.shell{width:100%;max-width:var(--shell);margin:0 auto;padding:0 var(--s5)}
 main{padding:var(--s5) 0 72px}
 .scan-top{display:grid;grid-template-columns:minmax(0,1fr)}
 .split{display:grid;grid-template-columns:minmax(280px,360px) minmax(0,1fr);gap:var(--s5);align-items:start}
@@ -158,7 +154,12 @@ main{padding:var(--s5) 0 72px}
 .ws-hd h1{font-size:var(--fs-6);font-weight:650;letter-spacing:-.02em}
 .ws-hd .meta-line{margin-top:8px}
 .workspace>div,.workspace>#dt-output{padding:0 32px}
-.workspace>header+div,.workspace>#dt-output{padding-top:var(--s4)}
+/* 四个面板（手动检测 / 流量接入 / 产品实测 / 自检）都是页头的直接兄弟：
+   一律从同一条基线开始，免得某个面板贴着页头、另一个多出一截 */
+.workspace>header+div,
+.workspace>div[id^="mode-"],
+.workspace>div[id^="panel-"],
+.workspace>#dt-output{padding-top:var(--s4)}
 .meta-line{color:var(--ink-3);font-size:var(--fs-1);letter-spacing:.02em}
 
 /* ==========================================================================
@@ -189,7 +190,7 @@ main{padding:var(--s5) 0 72px}
 /* ==========================================================================
    7. 按钮
    ========================================================================== */
-.btn,button.primary,button.ghost,button.danger{
+.btn{
   display:inline-flex;align-items:center;justify-content:center;gap:6px;
   font:inherit;font-size:var(--fs-2);font-weight:500;line-height:1.2;
   min-height:36px;padding:9px 20px;
@@ -197,17 +198,17 @@ main{padding:var(--s5) 0 72px}
   transition:background .15s,border-color .15s,color .15s,box-shadow .15s,transform .06s;
 }
 .btn:active:not(:disabled){transform:translateY(1px)}
-.btn-primary,button.primary{
+.btn-primary{
   background:var(--accent-2);
   border-color:transparent;color:#fff;font-weight:500;
 }
-.btn-primary:hover:not(:disabled),button.primary:hover:not(:disabled){background:var(--accent-2-h)}
-.btn-ghost,button.ghost{background:var(--surface);border-color:var(--line-2);color:var(--ink)}
-.btn-ghost:hover:not(:disabled),button.ghost:hover:not(:disabled){
+.btn-primary:hover:not(:disabled){background:var(--accent-2-h)}
+.btn-ghost{background:var(--surface);border-color:var(--line-2);color:var(--ink)}
+.btn-ghost:hover:not(:disabled){
   background:var(--surface-2);border-color:var(--ink-3);color:var(--ink);
 }
-.btn-danger,button.danger{background:var(--surface);border-color:var(--bad-line);color:var(--bad)}
-.btn-danger:hover:not(:disabled),button.danger:hover:not(:disabled){background:var(--bad-soft)}
+.btn-danger{background:var(--surface);border-color:var(--bad-line);color:var(--bad)}
+.btn-danger:hover:not(:disabled){background:var(--bad-soft)}
 .btn:disabled,button:disabled{opacity:.45;cursor:not-allowed;box-shadow:none}
 .btn-row{display:flex;align-items:center;gap:var(--s2);flex-wrap:wrap;margin-top:var(--s4)}
 .btn-row .note{font-size:var(--fs-2)}
@@ -222,9 +223,13 @@ main{padding:var(--s5) 0 72px}
 .form-row-3{display:grid;gap:var(--s3) var(--s4);align-items:end;margin-top:var(--s4);
   grid-template-columns:minmax(0,1.1fr) minmax(0,1.5fr) minmax(0,1.1fr)}
 .field{display:flex;flex-direction:column;gap:6px;min-width:0}
-.field>label,.form-row-3 label,.pair-inline>label{color:var(--ink-3);font-size:var(--fs-1);font-weight:500}
+.field>label,.form-row-3 label{color:var(--ink-3);font-size:var(--fs-1);font-weight:500}
 .field-wide{grid-column:1/-1}
+.card .form-row-5{margin-bottom:var(--s4)}
 .topo{max-width:760px}
+/* 连线设置那四项（名字 / 入口 / 记录员 / 读法）—— 列数自适应，窄屏自动折行 */
+.link-grid{display:grid;gap:var(--s3) var(--s4);align-items:end;margin-top:var(--s4);
+  grid-template-columns:repeat(auto-fit,minmax(190px,1fr))}
 input[type=text],input:not([type]),select,textarea,.input,.select{
   font:inherit;font-size:var(--fs-2);color:var(--ink);background:var(--surface);
   padding:9px 12px;border:1px solid var(--line-2);border-radius:var(--r2);
@@ -265,7 +270,7 @@ input[type=checkbox]{width:auto;min-width:0;height:15px;margin:0;accent-color:va
 }
 .alert-info{background:var(--accent-soft);border-color:var(--accent-line);color:var(--accent)}
 .alert-warn{background:var(--warn-soft);border-color:var(--warn-line);color:var(--warn)}
-.alert-err,.err{background:var(--bad-soft);border-color:var(--bad-line);color:var(--bad)}
+.err{background:var(--bad-soft);border-color:var(--bad-line);color:var(--bad)}
 #scan-err:not(:empty){margin-top:var(--s3)}
 .empty{
   padding:var(--s5) var(--s4);margin-top:var(--s2);text-align:center;color:var(--ink-3);font-size:var(--fs-2);
@@ -289,14 +294,55 @@ input[type=checkbox]{width:auto;min-width:0;height:15px;margin:0;accent-color:va
 /* ==========================================================================
    10. 徽章
    ========================================================================== */
-.badge,.badge-security,.badge-unknown,.badge-compatibility{
+.badge{
   display:inline-block;padding:2px 9px;border-radius:var(--r-pill);
   font-size:var(--fs-1);font-weight:600;line-height:1.5;vertical-align:1px;
   border:1px solid transparent;color:var(--ink-2);background:var(--surface-2);
 }
-.badge.security,.badge-security{background:var(--bad-soft);border-color:var(--bad-line);color:var(--bad)}
-.badge.unknown,.badge-unknown{background:var(--warn-soft);border-color:var(--warn-line);color:var(--warn)}
-.badge.compatibility,.badge-compatibility{background:var(--surface-2);border-color:var(--line-2);color:var(--ink-3)}
+.badge.security{background:var(--bad-soft);border-color:var(--bad-line);color:var(--bad)}
+.badge.unknown{background:var(--warn-soft);border-color:var(--warn-line);color:var(--warn)}
+.badge.compatibility{background:var(--surface-2);border-color:var(--line-2);color:var(--ink-3)}
+
+/* 危险等级五档 —— 与"安全级/疑点/兼容性"那套类别分开配色：
+   类别说的是"算不算安全问题"，等级说的是"多严重"。 */
+.badge.sev-critical{background:var(--bad-soft);border-color:var(--bad-line);color:var(--bad);font-weight:700}
+.badge.sev-high{background:var(--bad-soft);border-color:var(--bad-line);color:var(--bad)}
+.badge.sev-medium{background:var(--warn-soft);border-color:var(--warn-line);color:var(--warn)}
+.badge.sev-low{background:var(--surface-2);border-color:var(--line-2);color:var(--ink-2)}
+.badge.sev-info{background:var(--surface-2);border-color:var(--line-2);color:var(--ink-3)}
+.lv.sev-critical,.lv.sev-high{color:var(--bad);font-weight:600}
+.lv.sev-medium{color:var(--warn);font-weight:600}
+
+/* 修复形态：左=原始输入，右=规范化之后。逐行对照，改动行一眼可见。 */
+.fixlist{margin:6px 0 0 18px;padding:0;font-size:var(--fs-2);color:var(--ink-2)}
+.fixlist li{margin:2px 0}
+/* 修复形态独立块：三个入口共用一张卡；块头写清是哪条发现（等级 / 领域 / 对照实现） */
+.fixblock{
+  background:var(--surface-2);border:1px solid var(--line);
+  border-radius:var(--r2);padding:12px 14px;
+}
+.fixblock+.fixblock{margin-top:var(--s3)}
+.fixblock-hd{
+  display:flex;align-items:center;gap:8px;flex-wrap:wrap;
+  font-family:var(--mono);font-size:var(--fs-1);color:var(--ink-3);overflow-wrap:anywhere;
+}
+.fixblock-hd .fx-name{font-weight:650;color:var(--ink)}
+.fixblock .sect{margin-top:8px}
+.fixblock .sect>.note:first-child{padding-bottom:6px;margin-bottom:8px}
+.fixdiff{
+  margin-top:8px;border:1px solid var(--line);border-radius:var(--r-sm);
+  overflow:hidden;font-family:var(--mono);font-size:var(--fs-1);background:var(--surface);
+}
+.fdhead,.fdrow{display:grid;grid-template-columns:1fr 1fr}
+.fdhead span{
+  padding:4px 10px;background:var(--surface-2);color:var(--ink-3);
+  font-family:var(--font);font-size:var(--fs-1);border-bottom:1px solid var(--line);
+}
+.fdrow code{padding:2px 10px;white-space:pre-wrap;word-break:break-all;display:block}
+.fdrow code + code{border-left:1px solid var(--line)}
+.fdrow.same{color:var(--ink-3)}
+.fdrow.del code:first-child{background:var(--bad-soft);color:var(--bad)}
+.fdrow.add code:last-child{background:var(--good-soft);color:var(--good)}
 
 /* ==========================================================================
    11. 发现卡
@@ -371,7 +417,7 @@ input[type=checkbox]{width:auto;min-width:0;height:15px;margin:0;accent-color:va
 /* ==========================================================================
    13. 表格与热力图
    ========================================================================== */
-table,.table{border-collapse:collapse;width:100%;font-size:var(--fs-2);margin:var(--s2) 0;max-width:100%}
+table{border-collapse:collapse;width:100%;font-size:var(--fs-2);margin:var(--s2) 0;max-width:100%}
 th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top;overflow-wrap:anywhere}
 th{
   background:var(--surface-2);color:var(--ink-3);font-size:11px;font-weight:600;
@@ -383,7 +429,6 @@ tr.diff{background:var(--bad-soft)}
 tr.diff td{color:var(--bad)}
 tr.diff td:first-child::after{content:" ←";color:var(--bad)}
 tr.clickable{cursor:pointer}
-tr.prop-detail td{background:var(--surface-2)}
 
 .heat{border-collapse:separate;border-spacing:0;width:max-content;min-width:100%;margin:0;font-size:12.5px}
 .heat th,.heat td{border-right:1px solid var(--line);border-bottom:1px solid var(--line);padding:6px 10px;text-align:center;vertical-align:middle}
@@ -451,7 +496,6 @@ pre{
   background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r2);
   font:var(--fs-1)/1.6 var(--mono);white-space:pre;
 }
-pre.code{background:var(--surface-2)}
 code{font:var(--fs-1)/1.5 var(--mono);background:var(--surface-2);
   border:1px solid var(--line);border-radius:var(--r1);padding:1px 5px}
 pre code{background:none;border:0;padding:0}
@@ -700,6 +744,63 @@ dialog.sheet-wide{width:min(1000px,94vw)}
 }
 
 /* ==========================================================================
+   18b. 产品实测：跑法选择 / 连通性自检灯
+   —— 只补这几个"别处没有"的控件，其余一律沿用既有词汇（.card / .kv / .alert / .badge）
+   ========================================================================== */
+
+/* 跑法二选一：两张并列的卡，点哪儿都算选中（label 包住整张卡） */
+.runmode{display:grid;grid-template-columns:1fr 1fr;gap:var(--s3);margin-bottom:var(--s3)}
+.rm{
+  display:flex;flex-direction:column;gap:4px;position:relative;cursor:pointer;
+  padding:13px 15px 13px 42px;border:1px solid var(--line);
+  border-radius:var(--r2);background:var(--surface);
+  transition:border-color .15s,background .15s,box-shadow .15s;
+}
+.rm:hover{border-color:var(--line-2)}
+.rm input[type=radio]{position:absolute;left:15px;top:15px;width:16px;height:16px;margin:0}
+.rm .rm-t{font-weight:600;color:var(--ink);font-size:var(--fs-3)}
+.rm em{font-style:normal;color:var(--ink-3);font-size:12.5px;line-height:1.6}
+.rm:has(input:checked){border-color:var(--accent-line);background:var(--accent-soft)}
+.rm:has(input:focus-visible){outline:2px solid var(--accent);outline-offset:1px}
+
+/* 连通性自检：三盏灯。外壳沿用 .alert（同样的边、同样的圆角、同样的内边距），
+   这里只把内容排成"灯 + 标签 + 说明"三栏，并按灯色换底色 / 字色。 */
+.lights{display:flex;flex-direction:column;gap:6px;margin-top:var(--s3)}
+.light{display:grid;grid-template-columns:20px 132px minmax(0,1fr);
+  align-items:baseline;gap:10px}
+.light .dot{
+  width:20px;height:20px;line-height:20px;border-radius:var(--r-pill);
+  text-align:center;font-size:12px;font-weight:700;
+  color:var(--surface);background:var(--ink-3);
+}
+.light.ok{background:var(--good-soft);border-color:var(--good-line)}
+.light.warn{background:var(--warn-soft);border-color:var(--warn-line)}
+.light.no{background:var(--bad-soft);border-color:var(--bad-line)}
+.light.ok .dot{background:var(--good)}
+.light.warn .dot{background:var(--warn)}
+.light.no .dot{background:var(--bad)}
+.light b{color:var(--ink-2);font-weight:600}
+.light .d{color:var(--ink-3);line-height:1.6}
+
+/* 结果自证那三行用既有的 .kv 排（和发现卡里一样），只是标签列宽一点，跨行对齐 */
+#scan-verdict .kv{margin:8px 0}
+#scan-verdict .kv .k{min-width:96px}
+
+#scan-adv{margin-bottom:var(--s3)}
+
+/* 产品实测卡：“怎么跑”那排字段下面接“跑法”两张小卡、
+   小卡下面接连线区、连线区下面接主按钮那排；
+   四处都是上下相邻的区块，各给一段距，免得贴在一起。 */
+#scan-link-box{margin-top:var(--s4)}
+.runmode{margin-top:var(--s5);margin-bottom:var(--s5)}
+#scan-link-box>.toolbar{margin-top:var(--s5)}
+#scan-adv+.toolbar{margin-top:var(--s5)}
+
+/* 实测 / 推演：跟"等级"徽章并排，但用中性色 —— 它说的是证据来路，不是严重程度 */
+.badge.measured{background:var(--accent-soft);border-color:var(--accent-line);color:var(--accent)}
+.badge.inferred{background:var(--surface-2);border-color:var(--line-2);color:var(--ink-3)}
+
+/* ==========================================================================
    19. 响应式
    ========================================================================== */
 @media (min-width:1280px){
@@ -723,7 +824,6 @@ dialog.sheet-wide{width:min(1000px,94vw)}
   .workspace>div,.workspace>#dt-output{padding:0 var(--s4)}
 }
 @media (max-width:900px){
-  .shell{padding:0 var(--s4)}
   .split,.form-row-3{grid-template-columns:minmax(0,1fr)}
   .meter{flex-direction:column}
   .meter-cell{border-right:0}
@@ -736,7 +836,7 @@ dialog.sheet-wide{width:min(1000px,94vw)}
   .ws-hd h1{font-size:var(--fs-5)}
 }
 @media (max-width:560px){
-  .form-row-5,.form-row-3{grid-template-columns:minmax(0,1fr)}
+  .form-row-3{grid-template-columns:minmax(0,1fr)}
   .card{padding:18px 16px}
 }
 /* 触屏没有 hover：删除键得常显，否则它永远出不来 */

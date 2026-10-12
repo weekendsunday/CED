@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import random
 from typing import Callable
+from .engine import Mutator as _Mutator, build_corpus
 
 #: 轴的顺序（与 AXIS_PAIRS 的键一致，外加良性对照轴）
 AXES: tuple[str, ...] = (
@@ -168,11 +169,7 @@ _BUILDERS = {
 
 def corpus() -> list[tuple[str, bytes]]:
     """全部种子：(轴名, 查询串字节)。"""
-    out: list[tuple[str, bytes]] = []
-    for axis in AXES:
-        for payload in _BUILDERS[axis]():
-            out.append((axis, payload))
-    return out
+    return build_corpus(AXES, _BUILDERS)
 
 
 # --------------------------------------------------------------------------- 定向变异
@@ -280,33 +277,11 @@ OPS = (_op_add_semicolon, _op_duplicate_param, _op_encode_value, _op_add_plus,
        _op_add_empty, _op_add_bracket, _op_flip_name_case, _op_swap_order)
 
 
-class Mutator:
+class Mutator(_Mutator):
     """对每个种子随机叠加 1~2 个算子，产出确定性变体。"""
 
-    def __init__(self, variants_per_case: int = 6) -> None:
-        self.variants_per_case = variants_per_case
-
-    def expand(self, cases: list[tuple[str, bytes]],
-               rng: random.Random) -> list[tuple[str, bytes]]:
-        out: list[tuple[str, bytes]] = []
-        seen: set[bytes] = set()
-        for axis, seed in cases:
-            if seed not in seen:
-                seen.add(seed)
-                out.append((axis, seed))
-            for _ in range(self.variants_per_case):
-                cur = seed
-                for op in rng.sample(OPS, k=rng.randint(1, 2)):
-                    try:
-                        nxt = op(cur, rng)
-                    except Exception:      # 算子对畸形输入失败即跳过
-                        nxt = None
-                    if nxt:
-                        cur = nxt
-                if cur not in seen:
-                    seen.add(cur)
-                    out.append((axis, cur))
-        return out
+    OPERATORS = OPS
+    MAX_OPS = 2
 
 
 # --------------------------------------------------------------------------- 消融实验

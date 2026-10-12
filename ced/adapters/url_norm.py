@@ -19,14 +19,16 @@
 from __future__ import annotations
 
 import random
+import re
 
-from ..contracts import ImplSpec, Quantified
-from ..classify.upgradability import still_diverges
+from .. import httpmsg
+from ..contracts import HardenedRequest, ImplSpec, Quantified
+from ..classify.upgradability import ablate_via
 from ..impls import url_reference
 from ..impls.path_norm import normalize_target
 from ..minimize.ddmin import minimize_segments
 from ..mutate import url_axes
-from .base import http_request_fields
+from .base import HARDEN_NOTE, HARDEN_NOOP_NOTE, http_request_fields
 from .registry import register
 
 # ---- 分歧类型（判定器按此升级/降级）----
@@ -60,6 +62,7 @@ _KIND_MAP = {
                   "→ 若前置按自己的解算结果放行、后端按自己的解算结果路由，"
                   "受保护资源可被绕过访问（路径穿越 / 鉴权绕过）",
         "cwe": "CWE-22",
+        "severity": "high",   # 类型上限（证据不足时按规则降档）
         "scenario": "authz",
         "fix": _FIX_COMMON,
     },
@@ -68,6 +71,7 @@ _KIND_MAP = {
                   "反斜杠 / 连续斜杠 / 矩阵参数 / 尾随点不一致）"
                   "→ 鉴权与路由可能落在不同资源上（鉴权绕过 / 路由绕过 / WAF 绕过）",
         "cwe": "CWE-863",
+        "severity": "medium",   # 类型上限（证据不足时按规则降档）
         "scenario": "authz",
         "fix": _FIX_COMMON,
     },
@@ -75,12 +79,14 @@ _KIND_MAP = {
         "effect": "一侧接受、一侧拒绝同一个 target → 前置放行下游拒绝（或反之），"
                   "可造成防护绕过或可用性差异",
         "cwe": "CWE-436",
+        "severity": "low",   # 类型上限（证据不足时按规则降档）
         "scenario": "bypass",
         "fix": "统一对非规范 target 的接受策略，避免一侧宽容一侧严格",
     },
     KIND_SYNTAX_DETAIL: {
         "effect": "仅诊断信息不同，两侧认定的资源一致 → 无直接安全后果",
         "cwe": None,
+        "severity": "info",   # 类型上限（证据不足时按规则降档）
         "scenario": None,
         "fix": "无需修复；可作为兼容性记录",
     },
@@ -96,6 +102,7 @@ class UrlNormAdapter:
     """URL / 路径归一化领域。"""
 
     name = "url-norm"
+    content_keys: tuple[str, ...] = ("norm_path",)
     compare_keys: tuple[str, ...] = COMPARE_KEYS
     boundary_kinds: tuple[str, ...] = BOUNDARY_KINDS
     kind_acceptance: str = KIND_ACCEPTANCE
@@ -150,17 +157,7 @@ class UrlNormAdapter:
         而 target 是攻击者直接发送的 → 可控。
         与分帧领域"逐条移除请求头"完全同一条原理，只是承载者的形态不同。
         """
-        carriers: list[str] = []
-        for label, transform in url_axes.ABLATIONS:
-            try:
-                candidate = transform(div.payload)
-            except Exception:      # noqa: BLE001 —— 变换对畸形输入无效即跳过
-                continue
-            if candidate == div.payload:
-                continue           # 这条变换对当前输入没动作，不构成证据
-            if not still_diverges(candidate, div, evaluate, self.compare_keys):
-                carriers.append(label)
-        return carriers
+        return ablate_via(url_axes.ABLATIONS, div, evaluate, self.compare_keys)
 
     # ---------------------------------------------------------------- 最小化
 
@@ -237,8 +234,53 @@ class UrlNormAdapter:
                     "norm_back": back_res.norm_path},
             numbers=(front_res.norm_path, back_res.norm_path),
             verified=True,
+            mismatch=not same,
         )
 
+    # ---------------------------------------------------------------- 修复形态
+
+    #: 基准实现 —— 修复形态 = 按它的口径归一化之后的写法
+    baseline_id = "url-gateway"
+
+    def harden(self, payload: bytes):
+        """把 target 重写成**基准口径归一化后**的无歧义写法。
+
+        路径歧义的来源都是"这段字节还没被解算清楚"：``%2e%2e`` 究竟是 ``..`` 还是
+        字面量、反斜杠是不是分隔符、斜杠要不要折叠、大小写敏不敏感。全部解算掉再按
+        规范百分号编码写回去，每个实现读到的就是同一个资源 —— 歧义消失。
+        """
+        target = self.extract(payload)
+        if not target:
+            return None
+        try:
+            policy = url_reference.policy_of(self.baseline_id)
+        except KeyError:
+            return None
+        # 查询串不是本领域的观测对象 —— 只重写 `?` 之前那段（见 httpmsg.with_path）
+        path_part = target.partition(b"?")[0]
+        result = normalize_target(target, policy)
+        # 绝对形式（`http://host/p`）的 authority 不是本领域的观测对象 ——
+        # 它是"发给谁"，不是"要哪个资源"。归一化只针对路径，前缀原样带上。
+        prefix = b""
+        matched = re.match(rb"^[a-zA-Z][a-zA-Z0-9+.\-]*://[^/?#]*", path_part)
+        if matched:
+            prefix = matched.group(0)
+        canonical = prefix + httpmsg.percent_encode(
+            result.norm_path, safe="/").encode("ascii")
+        if canonical == path_part:
+            return HardenedRequest(domain=self.name, fixed=payload,
+                                   note=HARDEN_NOOP_NOTE)
+
+        changes = [f"target 归一化：`{httpmsg.brief(path_part)}` → "
+                   f"`{httpmsg.brief(canonical)}`（查询串原样保留）"]
+        if result.traversal:
+            changes.append("`..` 已解算 —— 原始写法里带着跨目录语义")
+        if result.decoded:
+            changes.append(f"百分号转义已解掉 {result.decoded} 层，"
+                           f"并按规范大写十六进制重写")
+        return HardenedRequest(domain=self.name,
+                               fixed=httpmsg.with_path(payload, canonical),
+                               changes=changes, note=HARDEN_NOTE)
 
 __all__ = ["UrlNormAdapter", "KIND_PATH_TRAVERSAL", "KIND_PATH_INTERP",
            "KIND_ACCEPTANCE", "KIND_SYNTAX_DETAIL", "BOUNDARY_KINDS",

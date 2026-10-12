@@ -107,7 +107,15 @@ OPS = (op_cl_variant, op_te_variant, op_dup_header, op_header_case, op_bare_lf,
 
 
 class Mutator:
-    """对每个种子随机叠加 1~3 个算子，产出确定性变体。"""
+    """定向变异：对每个种子随机叠加 1~``MAX_OPS`` 个算子，产出确定性变体。
+
+    各领域的**算子表不同**，但"叠加变异 → 去重 → 确定性（同 seed 同输出）"
+    这套机制只有一份：子类用类属性覆盖 ``OPERATORS`` / ``MAX_OPS`` 即可。
+    本类自带的是**分帧领域**（10 个算子、一轮最多叠 3 个）。
+    """
+
+    OPERATORS: tuple = OPS
+    MAX_OPS: int = 3
 
     def __init__(self, variants_per_case: int = 6) -> None:
         self.variants_per_case = variants_per_case
@@ -122,7 +130,8 @@ class Mutator:
                 out.append((axis, seed))
             for _ in range(self.variants_per_case):
                 cur = seed
-                for op in rng.sample(OPS, k=rng.randint(1, 3)):
+                for op in rng.sample(self.OPERATORS,
+                                     k=rng.randint(1, self.MAX_OPS)):
                     try:
                         nxt = op(cur, rng)
                     except Exception:      # 算子对畸形输入失败即跳过
@@ -133,3 +142,8 @@ class Mutator:
                     seen.add(cur)
                     out.append((axis, cur))
         return out
+
+
+def build_corpus(axes, builders) -> list[tuple[str, bytes]]:
+    """把「轴名 → 种子构造器」展开成种子语料（各领域共用）。"""
+    return [(axis, payload) for axis in axes for payload in builders[axis]()]

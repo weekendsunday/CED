@@ -26,7 +26,7 @@ from ced.adapters import host_norm  # noqa: F401
 from ced.adapters.host_norm import HostNormAdapter
 from ced import regression
 from ced.contracts import ImplSpec
-from ced.differ.comparator import compare, diff_keys, diverges
+from ced.differ.comparator import compare, diff_keys
 from ced.impls import host_reference
 from ced.impls.host_norm import normalize_host
 from ced.mutate import host_axes
@@ -133,9 +133,9 @@ class TestAblation(unittest.TestCase):
         transform = dict(host_axes.ABLATIONS)[target_label]
         candidate = transform(payload)
         self.assertNotEqual(candidate, payload)
-        self.assertFalse(diverges(evaluator(left, candidate),
-                                  evaluator(right, candidate),
-                                  ADAPTER.compare_keys))
+        self.assertFalse(diff_keys(evaluator(left, candidate),
+                                   evaluator(right, candidate),
+                                   ADAPTER.compare_keys))
 
     def test_userinfo_ablation(self):
         payload = b"evil.com@victim.example"

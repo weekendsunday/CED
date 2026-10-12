@@ -36,7 +36,7 @@
     <button type="button" class="navbtn" data-mode="scan" role="tab"
             aria-selected="false" aria-controls="panel-scan">
       <svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><rect x="2.2" y="2.2" width="4.6" height="4.6" rx="1"/><rect x="9.2" y="2.2" width="4.6" height="4.6" rx="1"/><rect x="2.2" y="9.2" width="4.6" height="4.6" rx="1"/><rect x="9.2" y="9.2" width="4.6" height="4.6" rx="1"/></svg>
-      <span>矩阵扫描</span></button>
+      <span>产品实测</span></button>
     <button type="button" class="navbtn" data-mode="check" role="tab"
             aria-selected="false" aria-controls="panel-check">
       <svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.6"/><path d="m5.4 8.1 1.8 1.8 3.4-3.6"/></svg>
@@ -103,6 +103,17 @@
     </div>
     <div id="dt-interp-body"></div>
   </section>
+
+  <!-- 修复形态（独立块）：内核给的改写方案，与模型无关 —— 不放进「模型解读」卡片里，
+       否则解读没出来（没勾 / 超时 / 失败）时它跟着一起消失。 -->
+  <details class="fold" id="dt-fixcard" open>
+    <summary>
+      <span class="fold-t">修复形态</span>
+      <span class="fold-s" id="dt-fixcard-s">尚未开始检测</span>
+      <span class="fold-x"></span>
+    </summary>
+    <div class="fold-body"><div id="dt-fix-body"></div></div>
+  </details>
 
   <details class="fold" id="dt-flow" open>
     <summary>
@@ -199,11 +210,24 @@
         </div>
         <div id="cap-interp-body"></div>
       </section>
+      <!-- 修复形态（独立块）：口径与手动检测完全一致 -->
+      <details class="fold" id="cap-fixcard" open>
+        <summary>
+          <span class="fold-t">修复形态</span>
+          <span class="fold-s" id="cap-fixcard-s">未选中记录</span>
+          <span class="fold-x"></span>
+        </summary>
+        <div class="fold-body"><div id="cap-fix-body"></div></div>
+      </details>
       <div class="split">
         <div>
           <div class="toolbar">
             <select class="select" id="cap-filter">
               <option value="all">全部</option>
+              <option value="critical">只看严重</option>
+              <option value="high">高及以上</option>
+              <option value="medium">中及以上</option>
+              <option value="low">低及以上</option>
               <option value="security">只看安全级</option>
               <option value="divergent">只看有分歧</option>
               <option value="skipped">只看跳过 / 隧道</option>
@@ -224,32 +248,82 @@
     </div>
 </div>
 
-  <div class="sect" id="panel-scan" hidden>
-    <div class="sect-hd">矩阵扫描 <span class="hint">5 个领域 · 51 个参照实现，定向差分</span></div>
-  <section class="legacy" id="tab-scan">
+  <div id="panel-scan" hidden>
     <div class="card">
-      <div class="card-hd"><h2>扫描任务</h2>
-          <span class="hint">拿内置语料在所选领域上主动搜，命中项自动产出证据链与最小复现样本</span></div>
+      <div class="card-hd"><h2>怎么跑</h2>
+          <span class="hint">拿语料一条条喂进去，看两边读出来的是不是同一回事；命中项自动产出证据链与最小复现样本</span></div>
+
       <div class="form-row-5">
         <div class="field"><label>领域</label><select id="scan-domain"></select></div>
-        <div class="field"><label>模式</label>
+        <div class="field"><label>怎么比</label>
           <select id="scan-mode">
-            <option value="axis">axis（单轴扫描）</option>
-            <option value="cross">cross（交叉扫描）</option>
+            <option value="axis">按轴定向（快，够用）</option>
+            <option value="cross">两两全比（慢，看得更全）</option>
           </select></div>
-        <div class="field"><label>用例上限</label><input type="text" id="scan-limit" value="60"></div>
-        <div class="field"><label>随机种子</label><input type="text" id="scan-seed" value="42"></div>
+        <div class="field"><label>喂多少条写法</label><input type="text" id="scan-limit" value="60"></div>
+        <div class="field"><label>随机种子</label>
+          <input type="text" id="scan-seed" value="42" title="同一个种子，每次挑出来的写法与顺序都一样 —— 便于复现"></div>
       </div>
-      <div class="form-row-3">
-        <div class="field field-wide topo"><label>拓扑文件（可选）</label>
-          <input type="text" id="scan-topology" placeholder="留空 = 用内置实现"></div>
+
+      <div class="runmode" id="scan-runmode" role="radiogroup" aria-label="跑法">
+        <label class="rm"><input type="radio" name="scan-run" value="product" checked>
+          <span class="rm-t">接我的产品</span>
+          <em>发一条过去、看它怎么读，再跟内置参照实现逐对比 —— 带「实测」</em></label>
+        <label class="rm"><input type="radio" name="scan-run" value="bench">
+          <span class="rm-t">只跑内置基准</span>
+          <em>全在进程内离线推演，不连任何东西 —— 用来演示与回归</em></label>
       </div>
-      <div class="btn-row">
-        <button class="btn btn-primary" id="scan-go">开始扫描</button>
+
+      <div id="scan-link-box">
+        <div class="link-grid">
+          <div class="field"><label>产品叫什么（可选）</label>
+            <input type="text" id="scan-prod-name" placeholder="我的产品"></div>
+          <div class="field"><label>产品入口地址</label>
+            <input type="text" id="scan-endpoint" placeholder="127.0.0.1:18080"></div>
+          <div class="field"><label>记录员地址</label>
+            <input type="text" id="scan-probe-api" placeholder="127.0.0.1:8801"></div>
+          <div class="field"><label>记录员的读法</label>
+            <select id="scan-policy"></select></div>
+        </div>
+        <div class="note">「记录员」是挂在你产品<strong>后面</strong>的那台探针：产品把请求转发出去，
+          记录员如实记下它收到的字节。这三项就说清了「往哪发、谁在记、按什么读」。</div>
+        <div class="toolbar">
+          <button class="btn" id="scan-check">检查连通性</button>
+          <span class="note" id="scan-check-note">先查一遍：三盏绿灯再开跑</span>
+        </div>
+        <div class="lights" id="scan-lights" aria-live="polite"></div>
+      </div>
+
+      <details class="fold" id="scan-adv">
+        <summary>
+          <span class="fold-t">高级</span>
+          <span class="fold-s">导入 / 导出连线设置</span>
+          <span class="fold-x"></span>
+        </summary>
+        <div class="fold-body">
+          <div class="toolbar">
+            <button class="btn btn-ghost" id="scan-import-btn">导入连线设置…</button>
+            <input type="file" id="scan-import" accept=".json,.yaml,.yml" hidden>
+            <button class="btn btn-ghost" id="scan-export">导出当前连线设置</button>
+          </div>
+          <div class="note" id="scan-adv-note">导入会填好上面那几项（多个产品、链路顺序也一并带进来）；
+            导出的文件可以留档，也能再导入。</div>
+        </div>
+      </details>
+
+      <div class="toolbar">
+        <button class="btn btn-primary" id="scan-go">开始实测</button>
         <button class="btn btn-danger" id="scan-abort" disabled>中止</button>
         <span class="note" id="scan-hint">—</span>
       </div>
       <div id="scan-err"></div>
+    </div>
+
+    <!-- 结果自证：本次是谁跟谁、有没有真实产品参与 —— 固定三行，不许含糊 -->
+    <div class="card" id="scan-verdict" hidden>
+      <div class="card-hd"><h2>这次是谁跟谁比</h2>
+        <span class="hint">先看这三行，再看下面的数字：没有真实产品参与时，下面是疑点，不是耦合结论</span></div>
+      <div id="scan-verdict-body"></div>
     </div>
 
     <div class="scan-top">
@@ -259,8 +333,8 @@
           <div class="meter-cell meter-stage"><span class="k">阶段</span><b class="v" id="scan-stage" aria-live="polite">—</b></div>
           <div class="meter-nums">
             <div class="meter-cell"><span class="k">用例</span><b class="v" id="scan-cases">0</b></div>
-            <div class="meter-cell"><span class="k">分歧</span><b class="v bad" id="scan-div">0</b></div>
-            <div class="meter-cell"><span class="k">安全级</span><b class="v bad" id="scan-sec">0</b></div>
+            <div class="meter-cell"><span class="k">读法不一致</span><b class="v bad" id="scan-div">0</b></div>
+            <div class="meter-cell"><span class="k">有安全影响</span><b class="v bad" id="scan-sec">0</b></div>
             <div class="meter-cell"><span class="k">已用时</span>
               <span class="v"><b id="scan-elapsed">0.0</b><em>秒</em></span></div>
           </div>
@@ -274,12 +348,22 @@
       </div>
 
       <div class="card">
-        <div class="card-hd"><h2>历史扫描任务</h2><span class="hint">(<span id="jobs-count">0</span>)</span></div>
+        <div class="card-hd"><h2>历史实测任务</h2><span class="hint">(<span id="jobs-count">0</span>)</span></div>
         <div id="scan-jobs">
           <div class="skeleton w60"></div><div class="skeleton w80"></div><div class="skeleton w60"></div>
         </div>
       </div>
     </div>
+
+    <!-- 修复形态（独立块）：跟着左侧选中的那条走 -->
+    <details class="fold" id="scan-fixcard" open>
+      <summary>
+        <span class="fold-t">修复形态</span>
+        <span class="fold-s" id="scan-fixcard-s">尚未扫描</span>
+        <span class="fold-x"></span>
+      </summary>
+      <div class="fold-body"><div id="scan-fix-body"></div></div>
+    </details>
 
     <div class="card">
       <div class="card-hd"><h2>发现与研判</h2>
@@ -289,7 +373,11 @@
           <div class="toolbar">
             <select class="select" id="scan-filter">
               <option value="all">全部</option>
-              <option value="security">仅安全级</option>
+              <option value="critical">仅严重</option>
+              <option value="high">高及以上</option>
+              <option value="medium">中及以上</option>
+              <option value="low">低及以上</option>
+              <option value="security">仅有安全影响</option>
             </select>
             <input class="input" type="text" id="scan-search" placeholder="按 case_id / 实现 / kind 过滤">
             <label class="check"><input type="checkbox" id="scan-group" checked> <span>同类归并</span></label>
@@ -304,21 +392,19 @@
     </div>
 
     <div class="card">
-      <div class="card-hd"><h2>扫描指标</h2><span class="hint">扫描完成后按统一口径统计</span></div>
+      <div class="card-hd"><h2>本次指标</h2><span class="hint">跑完后按统一口径统计</span></div>
       <div class="statcards" id="scan-metrics">
-        <div class="empty"><b>暂无指标</b>请先在「扫描任务」中启动一次扫描</div>
+        <div class="empty"><b>暂无指标</b>请先在上面的「怎么跑」里开一次实测</div>
       </div>
     </div>
 
     <div class="card">
       <div class="card-hd"><h2>实现对照矩阵</h2><span class="hint">颜色深度表示该对实现在相同输入上的分歧密度</span></div>
       <div class="scroll-x" id="scan-heatmap">
-        <div class="empty"><b>暂无数据</b>请先执行一次矩阵（cross 模式）扫描</div>
+        <div class="empty"><b>暂无数据</b>请先跑一次「两两全比」（cross）</div>
       </div>
     </div>
-  </section>
   </div>
-
 
   <!-- ============ 设置：小窗（原生 dialog，控件沿用原 id，读写逻辑不动） ============ -->
   <dialog class="sheet sheet-wide" id="set-dlg">
@@ -348,13 +434,13 @@
             <input type="checkbox" id="set-detect-llm"> <span>使用模型解读（手动检测与流量接入共用）</span></label>
           <div class="note">勾上后每次「开始检测」在判定完成后，再让模型把已有证据翻译成人话（影响叙述 / CWE 建议 / 修复建议）。它跑在内核出完级<b>之后</b>，只做加法 —— 判定级别一个字都不改，模型没配好或调用失败就回落成内核原文案。页面上的同名勾选框按这里的值预填。</div>
         </fieldset>
-        <fieldset class="set"><legend>扫描默认值</legend>
+        <fieldset class="set"><legend>产品实测默认值</legend>
           <div class="form-row-3">
             <label>领域<select class="select" id="set-scan-domain"></select></label>
-            <label>模式<select class="select" id="set-scan-mode"><option value="axis">axis（按轴定向）</option><option value="cross">cross（全部两两）</option></select></label>
-            <label>用例上限<input class="input" id="set-scan-limit"></label>
+            <label>怎么比<select class="select" id="set-scan-mode"><option value="axis">按轴定向（快，够用）</option><option value="cross">两两全比（慢，看得更全）</option></select></label>
+            <label>喂多少条写法<input class="input" id="set-scan-limit"></label>
           </div>
-          <label>随机种子<input class="input" id="set-scan-seed"></label>
+          <label>随机种子（同种子同结果）<input class="input" id="set-scan-seed"></label>
         </fieldset>
         <fieldset class="set"><legend>输出路径</legend>
           <label>PoC 目录<input class="input" id="set-poc-dir"></label>
@@ -375,19 +461,15 @@
   </dialog>
 
   <!-- ============ 自检与参考：并入检测页（不再是独立标签页） ============ -->
-  <div class="sect" id="panel-check" hidden>
-    <div class="sect-hd">系统自检与案例库 <span class="hint">引擎有效性回归 · 47 条已知案例的判定依据</span></div>
-    <section class="legacy">
+  <div id="panel-check" hidden>
     <div class="card">
       <div class="card-hd"><h2>系统自检</h2><span class="hint">引擎有效性回归：对已知案例库全量反验证，确保判定链路可用</span></div>
       <p class="lead">对已知案例库执行全量反验证：确认判定引擎当前版本可正确重现全部已知语义分歧。</p>
-      <div class="btn-row">
+      <div class="toolbar">
         <button class="btn btn-primary" id="runchk">跑自检</button>
       </div>
       <div id="checkresult" class="stack"></div>
     </div>
-    </section>
-    <section class="legacy" id="tab-cases">
     <div class="card">
       <div class="card-hd"><h2>已知案例库</h2><span class="hint">(<span id="casecount">0</span> 个)</span></div>
       <div class="split">
@@ -399,7 +481,6 @@
         <div id="casedetail" class="note">← 请选择左侧案例</div>
       </div>
     </div>
-    </section>
   </div>
 </main>
 </div>

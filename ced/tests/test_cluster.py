@@ -127,9 +127,28 @@ class TestClusterSurfaces(unittest.TestCase):
                          len(payload["findings"]))
         self.assertEqual(len(payload["findings"]), len(self.result.findings),
                          "JSON 必须保留完整清单，归并只影响展示")
+
+    def test_没改字节的修复形态不画对照表(self):
+        """字节没变的发现只给说明、不给对照表 —— 两栏一模一样不是对照，是噪声。
+
+        判据是修复形态自己的 ``changed``：拿"这一节里有没有 diff 围栏"来验。
+        """
+        payload = result_payload(self.result)
+        by_id = {f["case_id"]: f for f in payload["findings"]}
+        reps = [by_id[c["case_id"]] for c in payload["clusters"]]
+        noop = [f for f in reps if f["fix_view"]
+                and not f["fix_view"]["changed"] and not f["fix_view"]["reject"]]
+        self.assertTrue(noop, "这组语料里应当有'字节没得改'的分歧可测")
+        report = render_markdown(self.result, domain="host-norm")
+        for item in noop:
+            with self.subTest(case=item["case_id"]):
+                head = "`%s`" % item["case_id"]
+                chunk = next(c for c in report.split("\n### ") if head in c.split("\n", 1)[0])
+                self.assertIn("无需改写字节", chunk, "为什么没改动必须写出来")
+                self.assertNotIn("```diff", chunk, "没改动就不该画对照表")
         for item in payload["clusters"]:
-            self.assertEqual({"left", "right", "kind", "level", "count",
-                              "case_id", "axis", "case_ids"}, set(item))
+            self.assertEqual({"left", "right", "kind", "level", "severity",
+                              "count", "case_id", "axis", "case_ids"}, set(item))
         self.assertAlmostEqual(payload["redundancy"], redundancy(self.result.findings),
                                places=2)
 

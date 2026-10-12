@@ -18,7 +18,7 @@ import hashlib
 from urllib.parse import urlsplit
 
 from ..adapters import get, names as all_domains
-from ..classify.upgradability import judge
+from ..classify.upgradability import finalize, judge
 from ..differ.comparator import compare, diff_keys
 from ..probe import Evaluator
 from .model import Hypothesis, Verification
@@ -166,6 +166,14 @@ def _run_domain(h: Hypothesis, domain: str, adapter, payload: bytes
 
         kind = adapter.classify(list(div.keys))
         verdict = judge(div, kind, adapter, evaluator)
+        quantified = None
+        if verdict.is_security:
+            try:
+                quantified = adapter.quantify(payload, left_id, right_id, div=div)
+            except Exception:      # noqa: BLE001 —— 量化失败只影响档位，不影响结论
+                quantified = None
+        # 与内建样本、网页控制台同一条定级口径：量化结果参与定级，别只在一条链路上生效
+        finalize(verdict, adapter, quantified)
         try:
             minimized_b64 = _minimize_b64(adapter, evaluator, left_id, right_id,
                                           payload)
@@ -176,11 +184,14 @@ def _run_domain(h: Hypothesis, domain: str, adapter, payload: bytes
             minimize_note = ""
 
         detail = (f"{domain}：{left_id} 与 {right_id} 在轴 `{axis}` 上产生结构分歧"
-                  f"（字段 {list(div.keys)}）；judge 级别={verdict.level}{minimize_note}")
+                  f"（字段 {list(div.keys)}）；judge 级别={verdict.level}　危险等级={verdict.severity}{minimize_note}")
         return Verification(
             hypothesis=h, verdict=CONFIRMED, domain=domain,
             left=left_id, right=right_id, level=verdict.level, kind=kind,
+            severity=verdict.severity,
             reason=verdict.reason, evidence=verdict.ablation or "",
+            quantified=(quantified.describe if quantified else ""),
+            payload=bytes(payload),
             minimized_b64=minimized_b64, detail=detail,
         )
     return None

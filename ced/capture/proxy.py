@@ -404,16 +404,20 @@ class CaptureProxy:
                 # 记录已经被删掉（网页上按了删除）就别再把解读挂回列表：模型慢，
                 # 这一条可能在删除之后才回来，挂上去就成了列表里找不到的幽灵条目。
                 if data.get("ok") and record.get("case_id") in self.seen:
+                    domain = finding.get("domain", "")
                     self.interpretations.append({
                         "case_id": record.get("case_id", ""),
                         "ts": record.get("ts", ""),
                         "method": record.get("method", ""),
                         "host": record.get("host", ""),
                         "path": record.get("path", ""),
-                        "domain": finding.get("domain", ""),
+                        "domain": domain,
                         "level": finding.get("level", ""),
+                        "severity": finding.get("severity", ""),
                         "kind": finding.get("kind", ""),
                         "reason": finding.get("reason", ""),
+                        # 修复形态不挂在这里：它有自己的独立块（那条记录被选中时现算），
+                        # 而这个列表是每秒全量轮询的，塞进去等于每秒白搬一次 diff
                         "interpret": data})
 
     # ------------------------------------------------------------------ 处理
@@ -726,6 +730,13 @@ class CaptureProxy:
     def summary(self) -> dict:
         analyzed = [r for r in self.records if r.get("analysis")]
         security = [r for r in analyzed if r["analysis"]["security"]]
+        #: 按**危险等级**分档汇总：一条请求只按它最严重的那一档计一次 ——
+        #: 否则同一条请求会被几十对参照实现重复计数，"安全级 N"就被读成"N 个漏洞"。
+        by_severity: dict[str, int] = {}
+        for record in analyzed:
+            name = record["analysis"].get("severity")
+            if name:
+                by_severity[name] = by_severity.get(name, 0) + 1
         return {"requests": len(self.records),
                 "analyzed": len(analyzed),
                 "skipped": len([r for r in self.records if r.get("skip")]),
@@ -735,7 +746,14 @@ class CaptureProxy:
                 "upstream_failed": len([r for r in self.records
                                         if r.get("tunnel_failed") == "upstream"]),
                 "security_requests": len(security),
+                "by_severity": by_severity,
                 "divergences": sum(r["analysis"]["divergences"] for r in analyzed),
+                #: 有多少条请求**出现过**分歧。「分歧 N 处」是**对数**口径：一条请求
+                #: 会跟该领域几十对参照实现逐一比过，只给这一个数字容易被读成
+                #: "发现了 N 个问题"（实测一次真实浏览：128 条已分析请求 / 1816 处），
+                #: 所以把"涉及多少条请求"一起给出来。
+                "divergent_requests": len([r for r in analyzed
+                                           if r["analysis"]["divergences"]]),
                 "interpreted": self.interpret_stats["done"],
                 "interpret_failed": self.interpret_stats["failed"],
                 "interpret_skipped": (self.interpret_stats["dropped"]

@@ -37,13 +37,15 @@ class ScanJob:
 
     def __init__(self, job_id: str, *, domain: str = "http1-framing",
                  mode: str = "axis", limit: int | None = None, seed: int = 42,
-                 topology: str = "") -> None:
+                 topology: str = "", link: dict | None = None) -> None:
         self.job_id = job_id
         self.domain = domain
         self.mode = mode
         self.limit = limit
         self.seed = seed
         self.topology = topology
+        #: 界面上那份「连线设置」（接我的产品时的三条信息）。为空 = 只跑内置基准。
+        self.link = link
 
         self.state = PENDING
         self.created = time.time()
@@ -138,6 +140,7 @@ class ScanJob:
         data["done_jobs"] = self.done_jobs
         data["elapsed"] = round((self.finished or time.time())
                                 - (self.started or self.created), 3)
+        data["link"] = self.link or {}
         return data
 
 

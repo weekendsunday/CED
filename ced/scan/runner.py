@@ -11,7 +11,7 @@ import time
 
 from .. import store
 from ..adapters import get as get_adapter
-from ..orchestrate.topology import demo, load
+from ..orchestrate.topology import Topology, build, check_probes, demo, load
 from ..pipeline import plan_jobs, scan
 from ..probe import Evaluator
 from ..report.renderer import summary_of
@@ -19,6 +19,15 @@ from .job import (ABORTED, DONE, FAILED, RUNNING, JobAborted, JobRegistry,
                   ScanJob)
 
 DEFAULT_DB = "ced.db"
+
+
+def topology_of(job) -> Topology:
+    """按任务的来路组装拓扑：连线设置（界面）> 拓扑文件（命令行）> 内置基准。"""
+    if job.link:
+        return build(job.link, domain=job.domain)
+    if job.topology:
+        return load(job.topology)
+    return demo(job.domain)
 
 
 def db_path() -> str:
@@ -29,7 +38,8 @@ def db_path() -> str:
 def _counts(result) -> dict:
     """SSE 完成事件与控制台用的汇总 —— 与 ``/api/scan/result`` 的 summary 同口径。"""
     counts = {"total_cases": 0, "jobs": 0, "divergences": 0, "security": 0,
-              "rejected_cases": 0, "by_level": {}, "by_kind": {}}
+              "rejected_cases": 0, "by_level": {}, "by_severity": {},
+              "by_kind": {}}
     if result is None:
         return counts
     counts["total_cases"] = result.total_cases
@@ -51,7 +61,11 @@ def run_job(job: ScanJob, *, db: str | None = None) -> None:
     conn = None
     try:
         adapter = get_adapter(job.domain)
-        topo = load(job.topology) if job.topology else demo(job.domain)
+        topo = topology_of(job)
+        # 起跑前先核对"记录员"自报的身份：领域对不上直接失败（人话），
+        # 连不上/旧版探针则如实提示"无法校验" —— 绝不拿一份没意义的数字跑完全程。
+        for note in check_probes(topo):
+            job.emit({"type": "stage", "stage": "check", "detail": note})
         evaluator = Evaluator(topo.impls)
         job.total_jobs = len(plan_jobs(adapter, list(evaluator.specs), job.mode))
         job.emit({"type": "stage", "stage": "topology", "detail": topo.describe()})
