@@ -11,7 +11,9 @@
     ced serve      探针服务（把产品接进链路，走 chain）
 
 边界（写在前面，免得被误解）：本层**只做本机 HTTP 代理** —— 明文 HTTP 收全，
-HTTPS 只做 `CONNECT` 隧道直通（不拆包）；不装驱动、不要管理员、不碰 TLS 明文。
+HTTPS 默认做 `CONNECT` 隧道直通；装了可选依赖 `cryptography` 并对本机信任库
+导入本地 CA 后，才把 HTTPS 解成明文进同一条管线（不做则如实计为隧道）。
+全程不装驱动、不要管理员、不改系统代理设置。
 """
 from .analyze import Analysis, Hit, analyze
 from .proxy import CaptureProxy, Config, serve
