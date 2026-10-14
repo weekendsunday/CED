@@ -1431,6 +1431,7 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
     /* 这一轮自己的容器：事件按轮落账（见 handleEvent），历史切走再切回都不串 */
     const run = {id: ++runSeq, lines: [], findings: [], report: ''};
     lines = run.lines; findings = run.findings; lastReport = ''; shownRun = run;
+    shownFinding = null;   // 上一轮的选择不算数：新一轮 done 时还要「自动选最强的」
     renderFindings();
     setChain('running', '运行中'); el('dt-elapsed').textContent = ''; startTicker();
     el('dt-go').disabled = true;             // 跑完 / 失败 / 断流时统一恢复
