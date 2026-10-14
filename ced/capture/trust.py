@@ -153,7 +153,7 @@ def status() -> dict:
     if not supported:
         return _view("unsupported", title="需手动导入", ca=ca, trusted=trusted,
                      note="当前平台没有一键入口（那一步必然要管理员权限），按下面的指引导入。",
-                     hint=mitm.install_hint(ca))
+                     hint=mitm.install_hint(ca, PLATFORM))
     if trusted is None:
         return _view("unknown", title="待确认", ca=ca, trusted=None, supported=True,
                      note="没查出确定的信任状态，导入一次最保险。\n" + _may_prompt())
@@ -179,21 +179,21 @@ def apply(undo: bool = False) -> dict:
     argv = plan(undo=undo)
     if argv is None:
         return {"ok": False, "error": "当前平台没有一键入口，请按指引手动导入",
-                "hint": mitm.install_hint(ca)}
+                "hint": mitm.install_hint(ca, PLATFORM)}
     try:
         proc = _run(argv)
     except FileNotFoundError:
         return {"ok": False, "error": f"系统里没有 {argv[0]} 命令，只能手动导入",
-                "hint": mitm.install_hint(ca)}
+                "hint": mitm.install_hint(ca, PLATFORM)}
     except subprocess.TimeoutExpired:
         return {"ok": False, "command": " ".join(argv),
                 "error": "等系统确认超时（钥匙串密码框是不是没点？）—— 再点一次即可",
-                "hint": mitm.install_hint(ca)}
+                "hint": mitm.install_hint(ca, PLATFORM)}
     if proc.returncode != 0:
         return {"ok": False, "command": " ".join(argv),
                 "error": ((proc.stderr or "").strip() or (proc.stdout or "").strip()
                           or f"{argv[0]} 退出码 {proc.returncode}"),
-                "hint": mitm.install_hint(ca)}
+                "hint": mitm.install_hint(ca, PLATFORM)}
     return {"ok": True, "action": "undo" if undo else "trust",
             "command": " ".join(argv),
             "detail": (proc.stdout or "").strip() or (proc.stderr or "").strip()}

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import socket
 import sys
 import tempfile
@@ -850,8 +851,17 @@ class TestCaptureCaImportApi(unittest.TestCase):
         self.assertFalse(body["replaced"])
         self.assertIn("Acme Internal CA", body["subject"])
         self.assertEqual(_mitm_mod.CA_CERT.read_bytes(), cert, "证书要原样落盘")
-        self.assertEqual(_mitm_mod.CA_KEY.stat().st_mode & 0o777, 0o600,
-                         "私钥权限必须是 600")
+        if sys.platform == "win32":
+            # Windows 没有 POSIX 权限位（st_mode 恒 0o666），私钥靠 ACL 守：
+            # 去掉继承后应只剩本人一条 ACE。
+            out = subprocess.run(["icacls", str(_mitm_mod.CA_KEY)],
+                                 capture_output=True).stdout.decode("mbcs", errors="replace")
+            aces = [ln for ln in out.splitlines() if ":(" in ln]
+            self.assertEqual(len(aces), 1, f"私钥 ACL 应只剩本人一条：{out}")
+            self.assertIn(os.environ.get("USERNAME", ""), aces[0])
+        else:
+            self.assertEqual(_mitm_mod.CA_KEY.stat().st_mode & 0o777, 0o600,
+                             "私钥权限必须是 600")
 
         # 状态接口跟着变：名字取自证书本身（不是写死的默认名），并且有叶子数可看
         now = self._status()

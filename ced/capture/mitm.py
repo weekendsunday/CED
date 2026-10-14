@@ -46,8 +46,32 @@ def mitm_available() -> bool:
     return True
 
 
+def _win_acl(path: Path) -> None:
+    """Windows 没有 POSIX 权限位 —— ``chmod`` 只碰只读位，私钥得靠 ACL 守。
+
+    去掉继承、只授本人全权；与 chmod 分支同一口径：改不了不中断捕获。
+    """
+    import os
+    import subprocess
+    user = os.environ.get("USERNAME", "")
+    if not user:
+        return
+    # 目录必须带 OI/CI（对象/容器继承），否则不带继承标志的授权只罩目录本身，
+    # 之后落进去的文件一条 ACE 都继承不到 —— 连自己都会 PermissionError。
+    grant = f"{user}:(OI)(CI)(F)" if path.is_dir() else f"{user}:(F)"
+    try:
+        subprocess.run(["icacls", str(path), "/inheritance:r", "/grant:r", grant],
+                       capture_output=True, timeout=10)
+    except OSError:
+        pass
+
+
 def _tighten(path: Path) -> None:
     """把目录收到只有本人能进 —— 里面躺的是这张 CA 的私钥。"""
+    import sys
+    if sys.platform == "win32":
+        _win_acl(path)
+        return
     try:
         path.chmod(0o700)
     except OSError:
@@ -55,12 +79,16 @@ def _tighten(path: Path) -> None:
 
 
 def _write_private(path: Path, data: bytes) -> None:
-    """写私钥，顺手收到 600。
+    """写私钥，顺手收到只有本人可读。
 
     umask 通常是 022，不显式收紧就是 644 —— 同一台机器上任何账户都能读，
-    等于把"本机中间人"的能力交出去。
+    等于把"本机中间人"的能力交出去。Windows 上 chmod 是空操作，走 ACL。
     """
+    import sys
     path.write_bytes(data)
+    if sys.platform == "win32":
+        _win_acl(path)
+        return
     try:
         path.chmod(0o600)
     except OSError:
@@ -351,15 +379,25 @@ def import_ca(blob: bytes, key_blob: bytes | None = None, *,
             "files": purged["files"]}
 
 
-def install_hint(ca: Path) -> str:
-    """把 CA 装进信任库的人话指引（按平台）。"""
-    import sys
-    if sys.platform == "win32":
+def install_hint(ca: Path, platform: str | None = None) -> str:
+    """把 CA 装进信任库的人话指引（按平台）。
+
+    ``platform`` 收归一化名（win32 / darwin / linux，与 ``trust.PLATFORM`` 同口径）；
+    不传用本机真实平台。测试改 ``trust.PLATFORM`` 时指引必须跟着变，
+    否则命令走了 mac 分支、指引却还是 Windows 的 —— 两个平台真相源。
+    """
+    if platform is None:
+        import sys
+        platform = ("darwin" if sys.platform.startswith("darwin")
+                    else "win32" if sys.platform.startswith("win")
+                    else "linux" if sys.platform.startswith("linux")
+                    else sys.platform)
+    if platform == "win32":
         return (f"信任本地 CA（管理员或用户级任选其一）：\n"
                 f"  certutil -user -addstore Root \"{ca}\"\n"
                 f"或双击 {ca} → 安装证书 → 当前用户 → 受信任的根证书颁发机构。\n"
                 f"Firefox 另行导入：设置 → 隐私与安全 → 证书 → 查看证书 → 导入。")
-    if sys.platform == "darwin":
+    if platform == "darwin":
         return (f"信任本地 CA（不必 sudo）：\n"
                 f"  security add-trusted-cert -r trustRoot -p ssl "
                 f"-k ~/Library/Keychains/login.keychain-db \"{ca}\"\n"

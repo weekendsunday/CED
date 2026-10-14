@@ -79,15 +79,19 @@ fetch('/api/cases').then(r => r.json()).then(d => {
   });
 }).catch(() => {});
 
+let caseLoadSeq = 0;
 async function loadCase(id){
   const box = $('#casedetail');
   box.innerHTML = '加载中…';
+  const mine = ++caseLoadSeq;              // 快速连点时，只允许最后一次点击落地
   let d;
   try {
     d = await (await fetch('/api/case?id=' + encodeURIComponent(id))).json();
   } catch (err) {
-    return box.innerHTML = '<div class="err">' + fetchFailHint(err) + '</div>';
+    if (mine === caseLoadSeq) box.innerHTML = '<div class="err">' + fetchFailHint(err) + '</div>';
+    return;
   }
+  if (mine !== caseLoadSeq) return;        // 已经点了下一条：这次慢响应作废
   if (d.error) return box.innerHTML = '<div class="err">' + esc(d.error) + '</div>';
   const c = d.case, r = d.result;
   box.innerHTML = `
@@ -391,7 +395,14 @@ function subscribeScan(jobId){
   };
   es.onerror = () => {
     if (scanES === es && es.readyState === 2){
-      scanLog('事件流已断开', false);
+      // CLOSED（服务重启拿到 404 / 任务被清）不会自愈：控件必须复位，
+      // 否则「开始」永远灰着、「中止」还能点，用户只能刷新页面
+      scanLog('事件流已断开，任务状态未知（服务重启或连接中断）', false);
+      $('#scan-go').disabled = false;
+      $('#scan-abort').disabled = true;
+      $('#scan-hint').textContent = '事件流已断开，任务状态未知 —— 重新开始或刷新列表';
+      closeScanES();
+      loadScanJobs();
     }
   };
 }
@@ -689,15 +700,17 @@ async function loadScanJobs(){
     box.innerHTML = '<div class="err">' + fetchFailHint(err) + '</div>';
   }
 }
-
+let scanLoadSeq = 0;
 async function loadScanResult(jobId){
   if (!jobId) return;
   const box = $('#scan-evidence');
   box.className = 'note';
   box.innerHTML = '加载结果…';
+  const mine = ++scanLoadSeq;              // 连点两个任务时，只认最后一次
   try {
     const res = await fetch('/api/scan/result?job_id=' + encodeURIComponent(jobId));
     const d = await res.json();
+    if (mine !== scanLoadSeq) return;      // 已经切去别的任务：这批结果作废
     if (d.error){ box.innerHTML = '<div class="err">' + esc(d.error) + '</div>'; return; }
     const r = d.result || {};
     scanFindings = (r.findings || []).slice().sort(cmpFinding);
@@ -719,7 +732,7 @@ async function loadScanResult(jobId){
     loadScanMetrics(jobId);
     loadScanHeatmap(jobId);
   } catch (err) {
-    box.innerHTML = '<div class="err">' + fetchFailHint(err) + '</div>';
+    if (mine === scanLoadSeq) box.innerHTML = '<div class="err">' + fetchFailHint(err) + '</div>';
   }
 }
 
@@ -1115,6 +1128,9 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
   const NODES = [["identify","识别输入"],["extract","按领域取段"],["diff","逐对差分"],
                  ["judge","消融判定"],["poc","升级 / PoC"],["report","出报告"]];
   let es = null, lines = [], findings = [], lastReport = "";
+  /* 当前展示的那一轮检测。事件先落进各轮自己的数组，只有展示轮才上屏 ——
+     切去看历史时旧轮的迟到事件不许篡改历史，点回来还能继续跟上。 */
+  let shownRun = null, runSeq = 0;
 
   function initDag(){
     el('dt-dag').innerHTML = NODES.map((pair, i) =>
@@ -1184,7 +1200,9 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
     if (mode === 'all') return findings;
     const wanted = mode === 'flagged' ? ['security', 'confirmed']
                                       : ['unknown', 'unverifiable', 'refuted'];
-    return findings.filter(f => wanted.indexOf(f.level || f.verdict) >= 0);
+    /* 口径与 badge() 对齐：三态发现同时带 level 与 verdict 时按 verdict 分桶 ——
+       徽章显示「已证实」、筛选却落进「未证实」桶，就是显示与筛选在打架 */
+    return findings.filter(f => wanted.indexOf(f.verdict || f.level) >= 0);
   }
   function renderLevels(){
     /* 先按**危险等级**分档（内核给的判定），外部格式的核验结果（已证实/证不了）
@@ -1226,8 +1244,15 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
       selectFinding(findings[parseInt(node.dataset.i, 10)]);
     });
   }
-  window.__dtLoad = arr => {                // 工作区侧栏：切换回某次检测的发现集合
-    findings = arr; renderFindings(); renderFixCardHere();
+  window.__dtLoad = run => {                // 工作区侧栏：切换回某次检测
+    if (Array.isArray(run)){                // 兼容只给数组的老调用
+      findings = run; lines = []; lastReport = ''; shownRun = null;
+    } else {
+      // 报告行 / 最终报告跟着那轮一起还原 —— 否则「下载报告」导出的是上一次实跑的内容
+      findings = run.findings; lines = run.lines; lastReport = run.report || '';
+      shownRun = run;                       // 它若还在跑，后续事件继续上屏
+    }
+    renderFindings(); renderFixCardHere();
     renderInterpret();
     foldFlow(!hasInterpret());               // 有解读就收起过程，没有就照常展开
     const rs = el('dt-reportcard-s');
@@ -1321,51 +1346,80 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
     if (rep) rep.open = open;
   }
   function closeStream(){ if (es){ es.close(); es = null; } }
-  function handle(ev){
+  /* 事件按"它属于哪一轮"路由：数据永远落进自己那轮的数组（侧栏归档的是同一引用，
+     迟到的旧事件不丢账），但只有**正在展示的那一轮**才碰 DOM ——
+     看历史时旧轮的事件不许改屏，更不许把历史渲染成半新半旧。 */
+  function handleEvent(ev, run){
+    const shown = shownRun === run;
     if (ev.type === 'stage'){
-      setNode(ev.node, ev.state, ev.detail);
+      if (shown) setNode(ev.node, ev.state, ev.detail);
     } else if (ev.type === 'report'){
-      lines.push(ev.line);
-      const pre = el('dt-report');
-      pre.textContent = lines.join('\n');
-      pre.scrollTop = pre.scrollHeight;
+      run.lines.push(ev.line);
+      if (shown){
+        const pre = el('dt-report');
+        pre.textContent = run.lines.join('\n');
+        pre.scrollTop = pre.scrollHeight;
+      }
     } else if (ev.type === 'finding'){
-      findings.push(ev); renderFindings(); renderFixCardHere();
+      run.findings.push(ev);
+      if (shown){ renderFindings(); renderFixCardHere(); }
     } else if (ev.type === 'interpret'){
       const key = String(ev.key || '');
-      const target = findings.find(f => String(f.case_id || f.target || '') === key);
+      const target = run.findings.find(f => String(f.case_id || f.target || '') === key);
       if (target){
         target.interpret = ev.interpret;
-        renderFindings();
-        if (shownFinding === target) showEvidence(target);   // 正在看这条就就地刷新
-        renderInterpret();
-        if (hasInterpret()) foldFlow(false);                 // 解读出来了就把过程收起来
+        if (shown){
+          renderFindings();
+          if (shownFinding === target) showEvidence(target);   // 正在看这条就就地刷新
+          renderInterpret();
+          if (hasInterpret()) foldFlow(false);                 // 解读出来了就把过程收起来
+        }
       }
     } else if (ev.type === 'done'){
-      closeStream(); renderFindings(); renderFixCardHere();
-      setChain('done', '已完成');
-      stopTicker();
-      // 没人点过就自动选最强的那条 —— 修复形态不该藏在一次点击之后
-      if (!shownFinding) selectFinding(worstFinding(findings));
-      if (ev.result && ev.result.report) lastReport = ev.result.report;
-      el('dt-reportcard-s').textContent = findings.length
-        ? (findings.length + ' 条发现') : '无发现';
-      renderInterpret();
-      if (hasInterpret()) foldFlow(false);
-    } else if (ev.type === 'error'){
-      el('dt-err').innerHTML = '<div class="err">' + esc(ev.error) + '</div>';
-      setChain('error', '失败'); stopTicker();
+      if (ev.result && ev.result.report) run.report = ev.result.report;
       closeStream();
+      el('dt-go').disabled = false;
+      if (shown){
+        renderFindings(); renderFixCardHere();
+        setChain('done', '已完成');
+        // 没人点过就自动选最强的那条 —— 修复形态不该藏在一次点击之后
+        if (!shownFinding) selectFinding(worstFinding(run.findings));
+        lastReport = run.report;
+        el('dt-reportcard-s').textContent = run.findings.length
+          ? (run.findings.length + ' 条发现') : '无发现';
+        renderInterpret();
+        if (hasInterpret()) foldFlow(false);
+        stopTicker();
+      } else if (ticker){ clearInterval(ticker); ticker = null; }
+    } else if (ev.type === 'error'){
+      closeStream();
+      el('dt-go').disabled = false;
+      if (shown){
+        el('dt-err').innerHTML = '<div class="err">' + esc(ev.error) + '</div>';
+        setChain('error', '失败');
+        el('dt-reportcard-s').textContent = '失败';
+        stopTicker();
+      } else if (ticker){ clearInterval(ticker); ticker = null; }
     }
   }
+  function failStart(msg){                  // 没起成也要收场：不能停在「运行中」让计时器空转
+    el('dt-err').innerHTML = '<div class="err">' + msg + '</div>';
+    setChain('error', '失败');
+    el('dt-reportcard-s').textContent = '失败';
+    stopTicker();
+    el('dt-go').disabled = false;
+  }
   async function go(){
+    if (es){                                 // 防重入：上一轮还在收事件
+      el('dt-err').innerHTML = '<div class="err">上一轮检测还在跑，等它出结果再开下一轮</div>';
+      return;
+    }
     const text = exact ? latin1(exact) : el('dt-text').value;
     if (!text.trim()){
       el('dt-err').innerHTML = '<div class="err">先粘一份输入进来（或用下面的自动捕获）</div>';
       return;
     }
-    el('dt-err').innerHTML = ''; lines = []; findings = []; lastReport = '';
-    if (window.sideAddDetect) window.sideAddDetect(findings);
+    el('dt-err').innerHTML = '';
     checkMangled();
     el('dt-interp').hidden = true; el('dt-interp-body').innerHTML = '';
     el('dt-reportcard-s').textContent = '运行中…';
@@ -1373,8 +1427,13 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
     el('dt-report').textContent = ''; el('dt-list').innerHTML = '';
     renderFixCard('#dt-fix-body', '#dt-fixcard-s', [], '跑起来后这里会出现改写方案');
     el('dt-evidence').className = 'note'; el('dt-evidence').textContent = '← 请选择左侧条目';
-    initDag(); renderFindings();
+    initDag();
+    /* 这一轮自己的容器：事件按轮落账（见 handleEvent），历史切走再切回都不串 */
+    const run = {id: ++runSeq, lines: [], findings: [], report: ''};
+    lines = run.lines; findings = run.findings; lastReport = ''; shownRun = run;
+    renderFindings();
     setChain('running', '运行中'); el('dt-elapsed').textContent = ''; startTicker();
+    el('dt-go').disabled = true;             // 跑完 / 失败 / 断流时统一恢复
     const body = {text: text};
     // 解读是可选加法：勾了才让模型把证据翻译成人话（服务端还会再确认模型可用）
     if (el('dt-llm')) body.interpret = el('dt-llm').checked;
@@ -1385,15 +1444,30 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
         headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
       const info = await resp.json();
       if (info.error){
-        el('dt-err').innerHTML = '<div class="err">' + esc(info.error).replace(/\n/g, '<br>') + '</div>';
+        failStart(esc(info.error).replace(/\n/g, '<br>'));
         return;
       }
       el('dt-hint').textContent = '识别为 ' + info.kind + '：' + info.why;
-      closeStream();
+      run.jobId = info.job_id;
+      // 拿到 job_id 才进侧栏归档：失败的尝试不留空壳历史
+      if (window.sideAddDetect) window.sideAddDetect(run);
       es = new EventSource('/api/detect/events?job_id=' + encodeURIComponent(info.job_id));
-      es.onmessage = m => { try { handle(JSON.parse(m.data)); } catch (e) { /* 半条消息忽略 */ } };
+      es.onmessage = m => { try { handleEvent(JSON.parse(m.data), run); } catch (e) { /* 半条消息忽略 */ } };
+      // CLOSED（服务重启 / 任务被清）不会自动恢复：必须收场，否则计时器永远走、按钮永远灰
+      es.onerror = () => {
+        if (es && es.readyState === 2){
+          closeStream();
+          el('dt-go').disabled = false;
+          if (shownRun === run){
+            el('dt-err').innerHTML = '<div class="err">事件流已断开（服务重启或连接中断），这轮结果可能不完整</div>';
+            setChain('error', '中断');
+            el('dt-reportcard-s').textContent = '已中断';
+            stopTicker();
+          }
+        }
+      };
     } catch (err){
-      el('dt-err').innerHTML = '<div class="err">' + fetchFailHint(err) + '</div>';
+      failStart(fetchFailHint(err));
     }
   }
   el('dt-go').onclick = go;
@@ -1691,8 +1765,9 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
     const times = r.count > 1 ? ` <span class="badge" title="同一份字节又来了">×${r.count}</span>` : '';
     const extra = r.tunnel ? '（未拆包）'
                 : (r.skip ? esc(r.skip) : (r.elapsed_ms == null ? '分析中…' : r.elapsed_ms + 'ms'));
-    const active = (sel && sel.case_id && sel.case_id === r.case_id) ? ' sel' : '';
-    return `<div class="evitem${active}" data-case="${esc(r.case_id || '')}">
+    // 选中态按 seq 判：隧道行没有 case_id（空串），按 case_id 会让所有隧道行互相串选
+    const active = (sel && sel.seq === r.seq) ? ' sel' : '';
+    return `<div class="evitem${active}" data-case="${esc(r.case_id || '')}" data-seq="${r.seq}">
       <div class="id">${esc(r.method)} ${esc(r.host)}${esc(r.path || '')}${times}</div>
       <div class="meta">${verdictBadge(r)}　${extra}</div>
       ${canDelete ? `<button type="button" class="rowdel" data-del="${r.seq}"
@@ -1727,7 +1802,7 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
                      : (live ? '<div class="empty"><b>暂无请求</b>请确认客户端代理已指向本捕获端口</div>'
                              : '<div class="empty"><b>这次会话没有留下记录</b></div>'));
     list.querySelectorAll('.evitem').forEach(el => {
-      el.onclick = () => selectCase(el.dataset.case);
+      el.onclick = () => selectSeq(parseInt(el.dataset.seq, 10), el.dataset.case);
     });
     list.querySelectorAll('.rowdel').forEach(btn => {
       // 删除键在行里：不拦住冒泡的话，点它等于"先删掉、再选中一条不存在的记录"
@@ -1738,18 +1813,22 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
       (hits.length === source.length ? '' : hits.length + ' / ') + source.length + ' 条'
       + (hits.length > view.length ? '（只显示最近 200 条；完整记录在 JSONL 里）' : '');
   }
-  /* 选中一条：列表与「模型解读」面板都走这里，两边的高亮与证据面板才不会各说各话 */
-  function selectCase(caseId){
-    const found = shownRows().find(x => (x.case_id || '') === caseId);
+  /* 选中一条：列表与「模型解读」面板都走这里，两边的高亮与证据面板才不会各说各话。
+     行点击按 seq（每条唯一；隧道行没有 case_id，按它选会互相串），
+     点解读条目才按 case_id。 */
+  function selectSeq(seq, caseId){
+    const found = (seq != null && shownRows().find(x => x.seq === seq))
+      || (caseId ? shownRows().find(x => (x.case_id || '') === caseId) : null);
     if (!found) return;
     sel = found;
     const list = box('cap-list');
     list.querySelectorAll('.evitem').forEach(x =>
-      x.classList.toggle('sel', x.dataset.case === caseId));
+      x.classList.toggle('sel', Number(x.dataset.seq) === found.seq));
     const node = list.querySelector('.evitem.sel');
     if (node && node.scrollIntoView) node.scrollIntoView({block: 'nearest'});
-    detail(caseId);
+    detail(found.case_id || '');
   }
+  function selectCase(caseId){ selectSeq(null, caseId); }
 
   /* ---- 删记录 ----
      删的是**网页这份列表**：JSONL 台账是留证用的，那份记录一个字节都不动
@@ -1879,6 +1958,7 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
       d ? '这条请求没有可改写的字节（没有分歧，或分歧改字节消不掉）'
         : '选中左侧任意一条请求，这里给出它的改写方案 —— 内核给的，不依赖模型');
   }
+  let detailSeq = 0;
   async function detail(caseId){
     const ev = box('cap-evidence');
     if (!caseId){
@@ -1888,16 +1968,20 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
     }
     ev.className = '';
     ev.innerHTML = '<div class="note">加载中…</div>';
+    const mine = ++detailSeq;              // 连点两条时只认最后一条，慢响应不许回写
     try {
       // 回看历史会话时证据也要从**那次会话**里取：当前那份列表里已经没有它了
       const d = await (await fetch('/api/capture/record?case_id=' + encodeURIComponent(caseId)
         + (viewId ? '&session=' + encodeURIComponent(viewId) : ''))).json();
+      if (mine !== detailSeq) return;
       if (d.error){ ev.className = 'note'; ev.textContent = d.error; return; }
       ev.innerHTML = evHtml(d);
       renderCapFixCard(d);
       const btn = box('cap-poc');
       if (btn) btn.onclick = () => poc(caseId);
-    } catch(err){ ev.className = 'note'; ev.textContent = fetchFailText(err); }
+    } catch(err){
+      if (mine === detailSeq){ ev.className = 'note'; ev.textContent = fetchFailText(err); }
+    }
   }
   async function poc(caseId){
     const out = box('cap-poc-out'); const body = box('cap-poc-body');
@@ -1972,9 +2056,13 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
       }
     }
   }
+  let polling = false, pollFails = 0;
   async function poll(){
+    if (polling) return;                   // 上一轮还没回来：跳过这拍，不带着旧 seq 重发
+    polling = true;
     try {
       const d = await (await fetch('/api/capture/records?since=' + seq)).json();
+      pollFails = 0;
       liveSummary = d.summary;
       if (!viewRows) renderStats(d.summary);      // 正在回看历史就别把它的卡片盖掉
       let touched = false;
@@ -1989,6 +2077,9 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
         seq = d.records[d.records.length - 1].seq;
         touched = true;
       }
+      /* 只显示最近 200 条、完整记录在 JSONL —— 网页数组同样设上限，
+         长时间挂代理的大流量下内存与每秒重渲染的开销不再线性长 */
+      if (rows.length > 5000) rows = rows.slice(-5000);
       // 回看历史时列表与解读都定格在快照上：只把当前那次的记录悄悄攒起来，
       // 等点「回到当前」就是现成的（切换不要有等待感）
       if (touched){
@@ -2002,8 +2093,25 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
           renderInterp(interp);
         } catch(err){ /* 解读列表拿不到不影响捕获主流程 */ }
       }
-      if (!d.running){ stopPolling(); refreshSessions(); }
-    } catch(err){ stopPolling(); }
+      if (!d.running){
+        stopPolling();
+        // 在别处（另一页 / CLI）停掉的：本页控件与状态要跟着复位，别假装还在跑
+        box('cap-go').disabled = false; box('cap-stop').disabled = true;
+        setCapState('已停止' + (d.summary && d.summary.requests
+          ? '　' + d.summary.requests + ' 条请求 / 分歧 ' + d.summary.divergences : ''));
+        refreshSessions();
+      }
+    } catch(err){
+      /* 一次抖动就永久停摆是错的：捕获可能还在跑，页面却像"没有流量"。
+         连续失败 5 次才认输，期间把状态如实标出来。 */
+      if (++pollFails >= 5){
+        stopPolling();
+        box('cap-err').innerHTML = '<div class="err">轮询已中断（连续失败 '
+          + pollFails + ' 次）——捕获可能仍在运行，稍后重新开始接入可恢复。</div>';
+      }
+    } finally {
+      polling = false;
+    }
   }
   async function go(){
     box('cap-err').innerHTML = '';
@@ -2352,7 +2460,7 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
   const $id = id => document.getElementById(id);
   let mode = 'manual';
   let sideSel = null;                       // 选中的那条历史（存它自己的 key，见 sideRender）
-  const dtHistory = [];                     // {ts, title, arr} —— 每次手动检测的发现集合
+  const dtHistory = [];                     // {ts, title, run} —— 每次手动检测的整轮结果
 
   /* ---- 模式切换：六个面板互斥显示（状态写入 hash，可深链、可回退）---- */
   const MODE_PANELS = {
@@ -2479,7 +2587,7 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
       const e = dtHistory.find(x => x.id === Number(key));
       if (!e) return;
       setMode('manual');
-      if (window.__dtLoad) window.__dtLoad(e.arr);
+      if (window.__dtLoad) window.__dtLoad(e.run || e.arr);   // 老条目只有 arr
       showResultTab('panel-findings');
       const rep = $id('dt-reportcard'); if (rep) rep.open = true;   // 点了历史就得能看见那条
       sideRender();
@@ -2520,12 +2628,12 @@ $('#set-dlg-close').onclick = () => $('#set-dlg').close();
 
   /* 由捕获 / 检测两个模块回调 */
   let dtNextId = 1;
-  window.sideAddDetect = arr => {
+  window.sideAddDetect = run => {           // run：{findings, lines, report, …} 整轮归档
     const sel = $id('dt-domain');
     const name = sel && sel.selectedIndex >= 0
       ? sel.options[sel.selectedIndex].textContent : '';
     dtHistory.push({id: dtNextId++, ts: new Date(),
-                    title: '手动检测 · ' + (name || '全部领域'), arr});
+                    title: '手动检测 · ' + (name || '全部领域'), run});
     sideRender();
   };
   window.__sideSync = () => sideRender();   // 捕获那边刷新会话清单后调它

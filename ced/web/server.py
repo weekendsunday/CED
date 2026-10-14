@@ -739,12 +739,18 @@ class Handler(BaseHTTPRequestHandler):
         self.close_connection = True
 
         cursor = 0
+        # 浏览器 EventSource 断线会自动重连并带上 Last-Event-ID —— 从断点续传。
+        # 不从 0 全量重放：前端对 report/finding 事件是 push，重放就是整批重复。
+        last_id = self.headers.get("Last-Event-ID")
+        if last_id and last_id.isdigit():
+            cursor = int(last_id)
         try:
             while True:
                 events = job.drain(cursor, timeout=SSE_WAIT)
                 if events:
-                    for event in events:
+                    for i, event in enumerate(events, start=1):
                         body = json.dumps(event, ensure_ascii=False)
+                        self.wfile.write(b"id: " + str(cursor + i).encode("ascii") + b"\n")
                         self.wfile.write(b"data: " + body.encode("utf-8") + b"\n\n")
                     cursor += len(events)
                 else:                       # 注释行：什么都不表示，只为保持连接活跃
