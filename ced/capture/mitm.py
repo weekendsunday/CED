@@ -167,6 +167,8 @@ def ensure_ca() -> Path:
             .not_valid_before(now - datetime.timedelta(days=1))
             .not_valid_after(now + datetime.timedelta(days=CA_DAYS))
             .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+            .add_extension(x509.SubjectKeyIdentifier.from_public_key(key.public_key()),
+                           critical=False)
             .add_extension(x509.KeyUsage(digital_signature=True, content_commitment=False,
                                          key_encipherment=False, data_encipherment=False,
                                          key_agreement=False, key_cert_sign=True,
@@ -220,11 +222,25 @@ def _ensure_leaf(host: str) -> None:
     cert_path = HOSTS_DIR / f"{host}.crt"
     key_path = HOSTS_DIR / f"{host}.key.pem"
     chain_path = HOSTS_DIR / f"{host}.chain.crt"
+    ca_cert = x509.load_pem_x509_certificate(CA_CERT.read_bytes())
+    try:
+        issuer_id = ca_cert.extensions.get_extension_for_class(
+            x509.SubjectKeyIdentifier).value
+    except x509.ExtensionNotFound:
+        issuer_id = x509.SubjectKeyIdentifier.from_public_key(ca_cert.public_key())
+    authority_id = x509.AuthorityKeyIdentifier.from_issuer_subject_key_identifier(issuer_id)
     if chain_path.is_file() and key_path.is_file():
-        return
+        cached = x509.load_pem_x509_certificate(chain_path.read_bytes())
+        try:
+            cached_id = cached.extensions.get_extension_for_class(
+                x509.AuthorityKeyIdentifier).value
+        except x509.ExtensionNotFound:
+            cached_id = None
+        # 旧版叶子缺 AKI；重新签发叶子，保留 CA 与既有信任关系。
+        if cached_id is not None and cached_id.key_identifier == authority_id.key_identifier:
+            return
 
     ca_key = serialization.load_pem_private_key(CA_KEY.read_bytes(), password=None)
-    ca_cert = x509.load_pem_x509_certificate(CA_CERT.read_bytes())
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     # CN 上限 64 字符（x509.NameAttribute 硬限制）；真实 CDN 域名有更长的 ——
     # CN 只是展示名，域名校验走 SAN（DNSName 无此限制），超长就截断。
@@ -245,6 +261,10 @@ def _ensure_leaf(host: str) -> None:
             .not_valid_before(now - datetime.timedelta(days=1))
             .not_valid_after(now + datetime.timedelta(days=LEAF_DAYS))
             .add_extension(san, critical=False)
+            .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+            .add_extension(x509.SubjectKeyIdentifier.from_public_key(key.public_key()),
+                           critical=False)
+            .add_extension(authority_id, critical=False)
             .add_extension(x509.KeyUsage(digital_signature=True, content_commitment=False,
                                          key_encipherment=True, data_encipherment=False,
                                          key_agreement=False, key_cert_sign=False,

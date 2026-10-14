@@ -119,6 +119,10 @@ python -m ced probe 请求文件 --domain url-norm   # 指定领域（默认分�
 python -m ced capture --port 18081     # 自动捕获：浏览器/系统代理指向它，请求自动进差分
 python -m ced scan --mode axis --limit 60 --out report.md --db ced.db
 ```
+HTTPS 捕获证书支持 Python 3.13 的严格 X.509 校验：新 CA 带 SKI，叶子带 AKI；缺 AKI 的旧叶子
+在重新加载时补签。已有 CA 本身缺 SKI 时需显式更换，升级步骤见
+[`docs/部署运行说明.md`](docs/部署运行说明.md#https-证书升级与既有-ca)；代码不会擅自替换用户 CA 或修改系统信任。
+
 
 ### 网页界面做什么
 
@@ -191,8 +195,8 @@ python -m ced scan --topology ced/topologies/standin-front.json --mode axis --li
 | 真实 Docker 链路 | 实机跑通两个真实产品：`nginx:1.25.5`（第一档：nginx → 探针）与 `nginx → gunicorn` 第二档。**2026-10-11 实测重跑**：第二档 13 用例 / 前置拒绝 126 条 / 33 分歧 / 2 安全级；26 条 security 级最小样本被真实 nginx **全部 400/501 拒绝、零转发**（第一档无走私面）；实测到 nginx 真实行为三例：`TE: xchunked` → **501**、chunked 体被重定帧为 CL 再转发（79B 模型账 vs 114B 实转）、客户端半关闭且体在途时**取消转发**。PoC 支持 `--chain` 实机取证：`verified: real-chain` 断言（`984d5316` 实机 PASS）。明细见 `docker/README.md` 实测记录 |
 | 报告可读性 | 按「同一对实现 + 同一分歧类型」归并：分帧 13→**3** · 路径 82→**14** · Host 90→**6** · 查询串 100→**15** · 编码 82→**9**（发现 → 类；冗余最高 **15.0×**） |
 | 已知案例反验证 | **47/47 通过**（期望值来自 RFC / 公开先例；其中 **9 条**分帧案例另附真实产品实机观测 `real_obs`——nginx:1.25.5 与 nginx→gunicorn 两档实采，模型内反验证与实机观测分列、不混口径，见 `python -m ced regression` 输出） |
-| 自动化测试 | **311 个测试方法**（静态计数，全部通过——实跑结果见 `python main.py --check`；分组明细见 `ced/tests/`） |
-| 代码量 | 源码 81 文件 15530 行；测试 19 文件 5902 行（测试方法 311 个，静态计数；实跑结果见 `python main.py --check`）；前端 3 文件 4047 行（`index.html` / `app.css` / `app.js`）|
+| 自动化测试 | **314 个测试方法**（静态计数；实际执行结果见 `python main.py --check`；分组明细见 `ced/tests/`） |
+| 代码量 | 源码 81 文件 15553 行；测试 19 文件 5980 行（测试方法 314 个，静态计数；实跑结果见 `python main.py --check`）；前端 3 文件 4048 行（`index.html` / `app.css` / `app.js`）|
 | 第三方依赖 | **0** —— 连模型调用（`urllib`）与前端事件流（手写 SSE）都是标准库 |
 
 > 表中领域 / 实现数 / 案例数 / 代码量等规模数字由 `python -m ced stats`
@@ -481,7 +485,7 @@ python -m ced regression
 | `ced/scan/` | 扫描任务层（job / runner） |
 | `ced/web/` | 网页控制台（server.py + index.html / app.css / app.js） |
 | `docker/` | 真实 nginx → 探针链路（compose / 离线快照 / 实机验证记录与实际测到的定帧行为） |
-| `tests` | `ced/tests/` —— 311 项，`python main.py --check` 一键全跑 |
+| `tests` | `ced/tests/` —— 314 项，`python main.py --check` 一键全跑 |
 | `docs/部署运行说明.md` | 部署、运行、扩展、排错 |
 | `docs/技术方案.md` | 目标对象、服务形态、指标、排期 |
 | `results/` | 跑出来的报告、结果库与 PoC 脚本（样例可由 `python -m ced scan --domain http1-framing --mode axis --limit 60 --out results/ced-report.md --json results/ced-report.json --db results/ced.db --poc-dir results/pocs` 原样重建：报告与 **26 个 PoC 脚本逐字节一致**，结果库 `.db` 逻辑内容一致、字节会因 SQLite 页布局而不同） |

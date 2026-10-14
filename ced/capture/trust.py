@@ -62,7 +62,10 @@ def plan(undo: bool = False) -> list[str] | None:
 
 def _run(argv: list[str]) -> subprocess.CompletedProcess:
     """落到真实进程 —— 进程边界只有这一处，方便测试替换。"""
-    return subprocess.run(argv, capture_output=True, text=True, timeout=TIMEOUT)
+    # Windows 原生命令用本地代码页输出；Python UTF-8 模式不改变子进程编码。
+    encoding = "oem" if sys.platform == "win32" else "utf-8"
+    return subprocess.run(argv, capture_output=True, text=True, encoding=encoding,
+                          timeout=TIMEOUT)
 
 
 def _trusted(ca: Path) -> bool | None:

@@ -65,6 +65,16 @@ CL_TE = (b"POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length: 48\r\n"
          b"GET /smuggled HTTP/1.1\r\nHost: localhost\r\n\r\n")
 
 
+def _isolated_ca(case: unittest.TestCase) -> Path:
+    """每个证书用例独占目录与上下文缓存，避免触碰用户的 CA。"""
+    scratch = Path(case.enterContext(tempfile.TemporaryDirectory()))
+    for attr, value in (("CA_DIR", scratch), ("CA_CERT", scratch / "ca.crt"),
+                        ("CA_KEY", scratch / "ca.key.pem"),
+                        ("HOSTS_DIR", scratch / "hosts"), ("_LEAF_CACHE", {})):
+        case.enterContext(mock.patch.object(_mitm_mod, attr, value))
+    return scratch
+
+
 def _free_port() -> int:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
@@ -144,14 +154,11 @@ class _RawOrigin(threading.Thread):
 class _TlsOrigin(threading.Thread):
     """最小 TLS origin：拿本地 CA 签的叶子证书起一个能握手的 HTTPS 端口。"""
 
-    def __init__(self, port: int) -> None:
+    def __init__(self, port: int, host: str = "127.0.0.1") -> None:
         super().__init__(daemon=True)
         self.port = port
         self.stop = threading.Event()
-        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        ctx.load_cert_chain(_mitm_mod.HOSTS_DIR / "127.0.0.1.crt",
-                            _mitm_mod.HOSTS_DIR / "127.0.0.1.key.pem")
-        self.ctx = ctx
+        self.ctx = _mitm_mod.leaf_context(host)
         self.srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.srv.bind(("127.0.0.1", port))
@@ -255,6 +262,9 @@ class _ProxyHarness:
 class TestCaptureProxy(unittest.TestCase):
 
     def setUp(self) -> None:
+        _isolated_ca(self)
+        if _mitm_mod.mitm_available():
+            _mitm_mod.ensure_ca()
         self.origin_port = _free_port()
         self.origin = _RawOrigin(self.origin_port)
         self.origin.start()
@@ -370,6 +380,7 @@ class TestCaptureProxy(unittest.TestCase):
             head = s.recv(4096)
             self.assertIn(b"200 Connection Established", head)
             tls = ssl.create_default_context(cafile=str(_mitm_mod.CA_CERT))
+            tls.verify_flags |= ssl.VERIFY_X509_STRICT
             with tls.wrap_socket(s, server_hostname="127.0.0.1") as secure:
                 secure.sendall(b"GET /api/pay HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
                 secure.settimeout(5)
@@ -518,6 +529,64 @@ class TestCaptureProxy(unittest.TestCase):
         self.assertEqual(parts["requests"], 1)
         self.assertEqual(parts["analyzed"], 1)
         self.assertEqual(parts["tunnels"], 0)
+
+
+class TestMitmCertificates(unittest.TestCase):
+
+    def setUp(self) -> None:
+        if not _mitm_mod.mitm_available():
+            self.skipTest("未装 cryptography（可选依赖）")
+        _isolated_ca(self)
+        _mitm_mod.ensure_ca()
+
+    def _strict_peer(self, host: str) -> bytes:
+        origin = _TlsOrigin(_free_port(), host)
+        origin.start()
+        self.addCleanup(origin.close)
+        client_context = ssl.create_default_context(cafile=str(_mitm_mod.CA_CERT))
+        client_context.verify_flags |= ssl.VERIFY_X509_STRICT
+        with socket.create_connection(("127.0.0.1", origin.port), timeout=5) as raw:
+            with client_context.wrap_socket(raw, server_hostname=host) as secure:
+                return secure.getpeercert(binary_form=True)
+
+    def test_generated_certificates_pass_strict_ip_and_dns_verification(self):
+        from cryptography import x509
+        from cryptography.hazmat.primitives import serialization
+
+        for host in ("127.0.0.1", "capture.example"):
+            with self.subTest(host=host):
+                peer = self._strict_peer(host)
+                expected = x509.load_pem_x509_certificate(
+                    (_mitm_mod.HOSTS_DIR / f"{host}.crt").read_bytes())
+                self.assertEqual(peer, expected.public_bytes(serialization.Encoding.DER))
+
+    def test_legacy_cached_leaf_is_reissued_with_the_same_ca(self):
+        from cryptography import x509
+        from cryptography.hazmat.primitives import hashes, serialization
+
+        host = "127.0.0.1"
+        _mitm_mod.leaf_context(host)
+        cert_path = _mitm_mod.HOSTS_DIR / f"{host}.crt"
+        old = x509.load_pem_x509_certificate(cert_path.read_bytes())
+        ca_bytes = _mitm_mod.CA_CERT.read_bytes()
+        ca_key = serialization.load_pem_private_key(_mitm_mod.CA_KEY.read_bytes(), None)
+        builder = (x509.CertificateBuilder().subject_name(old.subject)
+                   .issuer_name(old.issuer).public_key(old.public_key())
+                   .serial_number(old.serial_number)
+                   .not_valid_before(old.not_valid_before_utc)
+                   .not_valid_after(old.not_valid_after_utc))
+        for ext in old.extensions:
+            if not isinstance(ext.value, x509.AuthorityKeyIdentifier):
+                builder = builder.add_extension(ext.value, ext.critical)
+        legacy = builder.sign(ca_key, hashes.SHA256())
+        cert_path.write_bytes(legacy.public_bytes(serialization.Encoding.PEM))
+        (_mitm_mod.HOSTS_DIR / f"{host}.chain.crt").write_bytes(
+            cert_path.read_bytes() + ca_bytes)
+        _mitm_mod._LEAF_CACHE.clear()  # 模拟旧版退出后，新版进程加载磁盘证书。
+
+        peer = x509.load_der_x509_certificate(self._strict_peer(host))
+        self.assertNotEqual(peer.serial_number, old.serial_number)
+        self.assertEqual(_mitm_mod.CA_CERT.read_bytes(), ca_bytes)
 
 
 class TestAnalyzeFanout(unittest.TestCase):
@@ -682,6 +751,9 @@ class TestCaptureCaTrustApi(unittest.TestCase):
         cls._httpd.shutdown()
         cls._httpd.server_close()
 
+    def setUp(self) -> None:
+        _isolated_ca(self)
+
     def test_ca_status_is_a_readable_state(self):
         """证书状态给的是**状态名**，不是让前端自己猜——前端只按 state 分支。"""
         status, body = _get(self.base, "/api/capture/ca/status")
@@ -788,16 +860,7 @@ class TestCaptureCaImportApi(unittest.TestCase):
     def setUp(self) -> None:
         if not _mitm_mod.mitm_available():
             self.skipTest("未装 cryptography（可选依赖）")
-        scratch = Path(tempfile.mkdtemp())
-        self.addCleanup(shutil.rmtree, str(scratch), True)
-        for attr, value in (("CA_DIR", scratch), ("CA_CERT", scratch / "ca.crt"),
-                            ("CA_KEY", scratch / "ca.key.pem"),
-                            ("HOSTS_DIR", scratch / "hosts")):
-            old = getattr(_mitm_mod, attr)
-            setattr(_mitm_mod, attr, value)
-            self.addCleanup(setattr, _mitm_mod, attr, old)
-        self.addCleanup(_mitm_mod.purge_leaves)       # 别把内存里的叶子上下文留给下个用例
-        self.dir = scratch
+        self.dir = _isolated_ca(self)
 
     def _import(self, **payload):
         payload.setdefault("confirm", True)
@@ -1288,8 +1351,21 @@ class TestCaTrustCommands(unittest.TestCase):
     """「一键导入信任库」的命令拼装 —— 只查拼出来的 argv，绝不碰真的信任库。"""
 
     def setUp(self) -> None:
+        _isolated_ca(self)
         self._old_platform = capture_trust.PLATFORM
         self.addCleanup(lambda: setattr(capture_trust, "PLATFORM", self._old_platform))
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows 原生命令输出编码")
+    def test_native_command_diagnostics_decode_in_utf8_mode(self):
+        message = "证书验证失败：找不到指定的证书"
+        raw = message.encode("oem", errors="replace")
+        expected = raw.decode("oem")
+        script = (f"import os; os.write(1, {raw!r}); "
+                  f"os.write(2, {raw!r}); raise SystemExit(1)")
+        result = capture_trust._run([sys.executable, "-c", script])
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, expected)
+        self.assertEqual(result.stderr, expected)
 
     def test_mac_uses_the_user_keychain_and_ssl_policy_only(self):
         capture_trust.PLATFORM = "darwin"
@@ -1340,6 +1416,8 @@ class TestCaTrustCommands(unittest.TestCase):
     def test_linux_has_no_one_click_entry(self):
         capture_trust.PLATFORM = "linux"
         self.assertIsNone(capture_trust.plan(), "Linux 那一步必然要管理员权限，不做一键")
+        if _mitm_mod.mitm_available():
+            _mitm_mod.ensure_ca()
         view = capture_trust.status()
         self.assertIn(view["state"], {"unsupported", "no_dependency"})
         self.assertFalse(view["supported"])
