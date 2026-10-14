@@ -308,10 +308,10 @@ class TestMetricsApi(unittest.TestCase):
         self.assertEqual(status, 200, payload)
         m = payload["metrics"]
         self.assertEqual(set(m), {
-            "total_cases", "jobs", "divergences", "by_level", "security",
-            "security_share", "controllable_rate", "unique_case_ratio",
-            "minimize_ratio", "minimized_count", "elapsed",
-            "avg_seconds_per_case"})
+            "total_cases", "jobs", "divergences", "by_level", "by_severity",
+            "security", "severity", "security_share", "controllable_rate",
+            "unique_case_ratio", "minimize_ratio", "minimized_count",
+            "elapsed", "avg_seconds_per_case"})
         self.assertEqual(m["security"], m["by_level"]["security"])
         self.assertGreater(m["security"], 0, "axis 扫描应至少有一条安全级")
         self.assertLessEqual(m["minimize_ratio"], 1.0)

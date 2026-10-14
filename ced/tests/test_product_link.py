@@ -16,6 +16,7 @@ import subprocess
 import sys
 import time
 import unittest
+from unittest import mock
 import urllib.request
 from pathlib import Path
 
@@ -423,9 +424,13 @@ class TestLinkLoader(unittest.TestCase):
         self.assertIn("chain", str(ctx.exception))
 
     def test_yaml_without_parser_says_what_to_do(self):
-        with self.assertRaises(SettingsError) as ctx:
-            from_text("domain: http1-framing\n", suffix=".yaml",
-                      source="a.yaml")
+        # 本机装了 PyYAML 也要能测「没装」的分支：sys.modules 置 None 让函数内
+        # import yaml 直接 ImportError（对局部导入这是唯一可靠的模拟方式）
+        import sys
+        with mock.patch.dict(sys.modules, {"yaml": None}):
+            with self.assertRaises(SettingsError) as ctx:
+                from_text("domain: http1-framing\n", suffix=".yaml",
+                          source="a.yaml")
         text = str(ctx.exception)
         self.assertTrue("PyYAML" in text or "pyyaml" in text, text)
 
